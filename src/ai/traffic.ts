@@ -232,7 +232,7 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
     return n;
   }
   // 도로 총연장에 맞춰 대수를 늘린다 (15km 기준 1배)
-  const scale = clamp(g.totalLen / 15000, 1, 4);
+  const scale = clamp(g.totalLen / 15000, 1, 9);
   for (const [id, count] of TRAFFIC_MIX) {
     const kind = KINDS[id];
     const total = Math.round(count * scale);

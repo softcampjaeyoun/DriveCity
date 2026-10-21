@@ -153,7 +153,28 @@ kbd {
   color: var(--muted);
 }
 
-#mapwrap { left: calc(14px + env(safe-area-inset-left, 0px)); bottom: calc(14px + env(safe-area-inset-bottom, 0px)); padding: 6px; }
+#mapwrap { left: calc(14px + env(safe-area-inset-left, 0px)); bottom: calc(14px + env(safe-area-inset-bottom, 0px)); padding: 6px; pointer-events: auto; cursor: pointer; }
+#bigmap {
+  position: fixed;
+  inset: 0;
+  z-index: 7;
+  background: rgba(10, 13, 22, 0.92);
+  padding: 24px max(16px, env(safe-area-inset-right, 0px)) 16px max(16px, env(safe-area-inset-left, 0px));
+}
+#bigmap canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+#bigmap .bigmap-label {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  font-size: 13px;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 14px;
+  white-space: nowrap;
+}
 #minimap { display: block; width: 150px; height: 150px; border-radius: 6px; }
 
 #gauge {

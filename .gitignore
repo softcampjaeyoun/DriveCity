@@ -13,8 +13,9 @@ dist-ssr
 *.local
 
 # OSM 원본 (수십 MB). npm run map:fetch 로 다시 받는다
-data/osm-raw.json
+data/osm-raw*.json
 data/osm-raw.tmp
+data/tiles/
 
 # Editor directories and files
 .vscode/*

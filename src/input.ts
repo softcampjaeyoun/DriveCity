@@ -9,7 +9,7 @@ export interface Input {
 
 export const IDLE: Readonly<Input> = { up: false, down: false, left: false, right: false, hb: false, nitro: false };
 
-export type Action = 'reset' | 'camera' | 'mute' | 'battle' | 'garage' | 'start' | 'escape' | 'radio' | 'fx' | 'cancel' | 'weather' | 'time';
+export type Action = 'reset' | 'camera' | 'mute' | 'battle' | 'garage' | 'start' | 'escape' | 'radio' | 'fx' | 'cancel' | 'weather' | 'time' | 'map';
 const KEY_ACTIONS: Record<string, Action> = {
   KeyR: 'reset',
   KeyC: 'camera',
@@ -21,6 +21,7 @@ const KEY_ACTIONS: Record<string, Action> = {
   KeyX: 'cancel',
   KeyK: 'weather',
   KeyT: 'time',
+  Tab: 'map',
   Enter: 'start',
   Escape: 'escape',
 };
@@ -38,7 +39,7 @@ export function createInput(): InputSystem {
   const fire = (a: Action) => handlers.get(a)?.forEach((fn) => fn());
 
   addEventListener('keydown', (e) => {
-    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Tab'].includes(e.code)) e.preventDefault();
     keys.add(e.code);
     if (e.repeat) return;
     const a = KEY_ACTIONS[e.code];

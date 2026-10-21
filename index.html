@@ -61,10 +61,10 @@
       <kbd>W A S D</kbd> 운전 · <kbd>Space</kbd> 드리프트 · <kbd>Shift</kbd> 부스트<br />
       <kbd>F</kbd> 배틀 · <kbd>G</kbd> 차고 · <kbd>X</kbd> 미션 포기<br />
       <kbd>N</kbd> 라디오 · <kbd>V</kbd> 효과 · <kbd>K</kbd> 날씨 · <kbd>T</kbd> 시간<br />
-      <kbd>R</kbd> 리셋 · <kbd>C</kbd> 카메라 · <kbd>M</kbd> 소리
+      <kbd>R</kbd> 리셋 · <kbd>C</kbd> 카메라 · <kbd>M</kbd> 소리 · <kbd>Tab</kbd> 지도
     </div>
 
-    <div class="hud panel" id="mapwrap"><canvas id="minimap" width="300" height="300"></canvas></div>
+    <div class="hud panel" id="mapwrap" title="클릭하면 큰 지도"><canvas id="minimap" width="300" height="300"></canvas></div>
 
     <div class="hud panel" id="gauge">
       <div class="speedrow">
@@ -121,6 +121,7 @@
     </div>
 
     <div id="garage" hidden></div>
+    <div id="bigmap" hidden></div>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

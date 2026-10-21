@@ -298,7 +298,8 @@ function pushBuilding(ring, t) {
   const c = ringCentroid(r);
   if (!inBox(c)) return;
   const h = Math.round(buildingHeight(t) * 10) / 10;
-  buildings.push({ ring: r, h, kind: h > 30 ? 'tower' : area > 600 ? 'block' : 'low', name: tagName(t) });
+  const apt = t.building === 'apartments' || t.building === 'dormitory' || (t.building === 'residential' && h > 20);
+  buildings.push({ ring: r, h, kind: apt ? 'apt' : h > 30 ? 'tower' : area > 600 ? 'block' : 'low', name: tagName(t) });
 }
 for (const w of ways.values()) {
   if (!w.tags?.building || w.tags.building === 'no') continue;
@@ -391,7 +392,7 @@ for (const n of osmNodes.values()) {
           const l2 = dx * dx + dz * dz || 1;
           const t = Math.min(1, Math.max(0, ((x - x0) * dx + (z - z0) * dz) / l2));
           const d = Math.hypot(x - (x0 + dx * t), z - (z0 + dz * t)) - halfOf(e);
-          if (!best || d < best.d) best = { d, hx: dx / Math.sqrt(l2), hz: dz / Math.sqrt(l2), rank: CLASS_RANK[e.cls] };
+          if (!best || d < best.d) best = { d, hx: dx / Math.sqrt(l2), hz: dz / Math.sqrt(l2), rank: CLASS_RANK[e.cls], elevated: e.bridge || e.tunnel };
         }
       }
     }
@@ -421,6 +422,42 @@ for (const n of osmNodes.values()) {
     }
     return false;
   };
+  // 고가·다리·터널 도로는 게임에서 지면 높이라, 그 위아래에 있는 실제 건물은 뺀다 (안 그러면 차가 건물 속을 달린다)
+  {
+    const elevated = edges.filter((e) => e.bridge || e.tunnel);
+    const distToEdge = (e, x, z) => {
+      let best = Infinity;
+      for (let k = 0; k < e.pts.length - 2; k += 2) {
+        const x0 = e.pts[k]; const z0 = e.pts[k + 1]; const dx = e.pts[k + 2] - x0; const dz = e.pts[k + 3] - z0;
+        const l2 = dx * dx + dz * dz || 1;
+        const t = Math.min(1, Math.max(0, ((x - x0) * dx + (z - z0) * dz) / l2));
+        best = Math.min(best, Math.hypot(x - (x0 + dx * t), z - (z0 + dz * t)));
+      }
+      return best;
+    };
+    const before = buildings.length;
+    for (let i = buildings.length - 1; i >= 0; i--) {
+      const r = buildings[i].ring;
+      const bb = bboxOf(r);
+      let hit = false;
+      for (const e of elevated) {
+        const margin = halfOf(e) + 3;
+        // 간선 bbox 로 먼저 거른다
+        let ex0 = Infinity, ex1 = -Infinity, ez0 = Infinity, ez1 = -Infinity;
+        for (let k = 0; k < e.pts.length; k += 2) { ex0 = Math.min(ex0, e.pts[k]); ex1 = Math.max(ex1, e.pts[k]); ez0 = Math.min(ez0, e.pts[k + 1]); ez1 = Math.max(ez1, e.pts[k + 1]); }
+        if (bb[0] > ex1 + margin || bb[1] < ex0 - margin || bb[2] > ez1 + margin || bb[3] < ez0 - margin) continue;
+        for (let k = 0; k < r.length && !hit; k += 2) if (distToEdge(e, r[k], r[k + 1]) < margin) hit = true;
+        if (!hit) { const c = ringCentroid(r); if (distToEdge(e, c[0], c[1]) < margin) hit = true; }
+        if (hit) break;
+      }
+      if (hit) buildings.splice(i, 1);
+    }
+    console.log(`  고가·터널과 겹치는 건물 ${before - buildings.length}동 제거`);
+    // occupied 색인도 다시 만든다
+    occupied.length = 0;
+    bCells.clear();
+    for (const b of buildings) addOcc(b.ring);
+  }
   let added = 0;
   const STEP = 11;
   for (let gx = minX + 8; gx < maxX - 8; gx += STEP) {
@@ -429,6 +466,7 @@ for (const n of osmNodes.values()) {
       const z = gz + (rnd() - 0.5) * 6;
       const road = nearestRoad(x, z, 70);
       if (!road || road.d < 3.5 || road.d > 55) continue; // 길에서 너무 멀면 빈 땅(산, 강변)으로 둔다
+      if (road.elevated && road.d < 12) continue; // 고가 옆은 비워 둔다
       if (blocked.some((b) => x >= b.bb[0] && x <= b.bb[1] && z >= b.bb[2] && z <= b.bb[3] && inRing(b.ring, x, z))) continue;
       // 도로와 나란한 직사각형
       const big = road.rank <= 2;
@@ -443,7 +481,9 @@ for (const n of osmNodes.values()) {
       if (!ok || overlaps(ring, 1.5)) continue;
       const h = big ? 18 + rnd() * 40 : road.rank <= 4 ? 10 + rnd() * 16 : 6 + rnd() * 8;
       const hh = Math.round(h * 10) / 10;
-      buildings.push({ ring, h: hh, kind: hh > 30 ? 'tower' : w * d > 400 ? 'block' : 'low', name: '' });
+      // 골목 안쪽 중층은 빌라·소형 아파트 느낌으로
+      const apt = road.rank >= 5 && hh > 12 && rnd() < 0.5;
+      buildings.push({ ring, h: hh, kind: apt ? 'apt' : hh > 30 ? 'tower' : w * d > 400 ? 'block' : 'low', name: '' });
       addOcc(ring);
       added++;
     }

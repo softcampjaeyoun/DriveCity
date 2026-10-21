@@ -85,6 +85,7 @@ export function createPlayer(scene: THREE.Scene, g: RoadGraph): Player {
   const dark = new THREE.MeshPhongMaterial({ color: 0x0c0e14, shininess: 120, specular: 0x8899bb });
   const lower = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.55, 4.3), paint);
   lower.position.y = 0.68;
+  lower.castShadow = true;
   const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.66, 0.48, 2.0), dark);
   cabin.position.set(0, 1.18, -0.25);
   const hood = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.12, 1.3), paint);

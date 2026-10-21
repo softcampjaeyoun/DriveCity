@@ -12,6 +12,10 @@ export interface MapPoint {
 
 export interface Minimap {
   draw(t: number, S: PlayerState, npcs: Npc[], target: MapPoint | null, extra: MapPoint[]): void;
+  /** 미리 그려 둔 전체 지도 (큰 지도에서 재사용) */
+  readonly background: HTMLCanvasElement;
+  readonly scale: number;
+  toBg(x: number, z: number): [number, number];
 }
 
 /** 플레이어 중심으로 따라오는 북쪽 고정 미니맵. 지도는 한 번만 그려 두고 잘라 쓴다 */
@@ -57,6 +61,9 @@ export function createMinimap(canvas: HTMLCanvasElement, map: MapData, g: RoadGr
   }
 
   return {
+    background: bg,
+    scale: SCALE,
+    toBg: (x, z) => [tx(x), tz(z)],
     draw(t, S, npcs, target, extra) {
       const sx = tx(S.x) - MM / 2;
       const sz = tz(S.z) - MM / 2;

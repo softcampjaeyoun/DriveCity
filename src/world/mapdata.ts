@@ -22,7 +22,7 @@ export interface EdgeData {
 export interface BuildingData {
   ring: number[];
   h: number;
-  kind: 'tower' | 'block' | 'low';
+  kind: 'tower' | 'block' | 'low' | 'apt';
   name: string;
 }
 

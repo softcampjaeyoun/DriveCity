@@ -13,7 +13,9 @@ import { createRadio, type Radio } from './radio.ts';
 import { createDaylight } from './render/daylight.ts';
 import { createStage } from './render/scene.ts';
 import { createWeather } from './render/weather.ts';
+import { createBigMap } from './ui/bigmap.ts';
 import { createGarage } from './ui/garage.ts';
+import { placeName } from './game/places.ts';
 import { createHud } from './ui/hud.ts';
 import { createMinimap, type MapPoint } from './ui/minimap.ts';
 import { createPlayer } from './vehicle/player.ts';
@@ -37,6 +39,8 @@ const canvas = document.getElementById('view') as HTMLCanvasElement;
 const stage = createStage(canvas);
 const { scene, camera } = stage;
 const hud = createHud();
+// 간판·광고판 글씨를 캔버스에 그리니 한글 웹폰트를 먼저 기다린다
+await Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, 2500))]);
 const map = await loadMap();
 const graph = buildGraph(map);
 const signals = createSignals(scene, graph);
@@ -44,6 +48,9 @@ const city = buildCity(scene, map, graph, signals.has);
 const world = createCollisionWorld(map, graph);
 const player = createPlayer(scene, graph);
 const minimap = createMinimap(document.getElementById('minimap') as HTMLCanvasElement, map, graph);
+const bigmap = createBigMap(document.getElementById('bigmap') as HTMLElement, minimap, graph, (x, z) => placeName(graph, graph.nearestNode(x, z)));
+document.getElementById('mapwrap')!.addEventListener('click', () => bigmap.toggle());
+document.getElementById('bigmap')!.addEventListener('click', () => bigmap.toggle());
 const chase = createChaseCamera(camera, (x, z, r) => world.push({ x, z, r }));
 const input = createInput();
 const marker = createMarker(scene, COLOR.run);
@@ -135,6 +142,7 @@ input.on('fx', () => {
 });
 input.on('cancel', () => missions.cancel());
 input.on('weather', () => weather.toggle());
+input.on('map', () => bigmap.toggle());
 input.on('time', () => {
   daylight.skip(4);
   toast(`시간 ${daylight.label}`, '', 1);
@@ -205,7 +213,7 @@ function frame(now: number): void {
   last = now;
   const t = now / 1000;
   const S = player.S;
-  const inp = started && !garage.open ? input.read() : IDLE;
+  const inp = started && !garage.open && !bigmap.open ? input.read() : IDLE;
 
   lastHit = 0;
   const r = player.step(dt, inp, carStats, world, () => traffic.collidePlayer(S));
@@ -226,6 +234,7 @@ function frame(now: number): void {
   const bt = battle.update(S);
   run.update(now, S);
   weather.update(dt, camera);
+  daylight.follow(S.x, S.z);
   daylight.update(dt, weather.raining);
 
   // 목표 지점: 미션 > 배틀 결승 > 타임어택 체크포인트
@@ -282,7 +291,9 @@ function frame(now: number): void {
   });
   hud.tick(dt);
   const extra: MapPoint[] = missions.spots.filter((sp) => sp.cool <= 0 && !missions.active).map((sp) => ({ x: sp.x, z: sp.z, color: hex(COLOR.mission), r: 3.5 }));
-  minimap.draw(t, S, traffic.npcs, { x: target.x, z: target.z, color: hex(target.color) }, extra);
+  const targetPoint = { x: target.x, z: target.z, color: hex(target.color) };
+  minimap.draw(t, S, traffic.npcs, targetPoint, extra);
+  bigmap.draw(t, S, traffic.npcs, targetPoint, extra);
 
   audio?.update(dt, 48 + within * 85 + gear * 9 + (inp.up ? 8 : 0), inp.up, r.drifting, wanted.stars > 0 && nearestPolice < 140);
 

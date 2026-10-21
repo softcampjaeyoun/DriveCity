@@ -13,12 +13,18 @@ export interface Stage {
   setBloom(on: boolean): void;
   setBloomStrength(v: number): void;
   setSky(top: THREE.Color, horizon: THREE.Color): void;
+  setExposure(v: number): void;
   readonly bloom: boolean;
 }
 
 export function createStage(canvas: HTMLCanvasElement): Stage {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+  // 필름 톤매핑: 낮 하늘과 네온이 사진처럼 눌린다
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   const scene = new THREE.Scene();
   // 지평선은 도시 불빛이 번진 보랏빛, 위로 갈수록 어두운 남색. 안개색은 지평선색과 맞춘다. 낮·밤은 daylight 가 바꾼다
@@ -85,6 +91,9 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
     setSky(top, horizon) {
       (skyMat.uniforms.top.value as THREE.Color).copy(top);
       (skyMat.uniforms.horizon.value as THREE.Color).copy(horizon);
+    },
+    setExposure(v) {
+      renderer.toneMappingExposure = v;
     },
   };
 }
