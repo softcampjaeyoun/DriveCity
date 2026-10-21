@@ -33,7 +33,9 @@ npm run preview  # 빌드 결과 확인
 
 ## 도시: 실제 서울 (OpenStreetMap)
 
-- 기본 지도는 **강남구·서초구 핵심(한남대교~강남역~테헤란로~반포)** 약 6.2km × 5.5km 예요. 도로 546km, 건물 약 3만 동. 도로망·차선 수·일방통행·다리·건물 높이·한강·공원·동네 이름·신호등 위치를 OSM 에서 가져와요.
+- 지도는 1km 타일로 나뉘어 있고 **플레이어 주변 3×3 타일만** 메모리에 올라와요(`docs/streaming-plan.md`). 그래서 지역이 넓어져도 부담이 같아요.
+- 도로망·차선 수·일방통행·다리·건물 높이·한강·공원·동네 이름·신호등 위치를 OSM 에서 가져와요. 기본 지도 영역은 `public/map/seoul/index.json` 의 bbox 를 보세요.
+- 거리 요소: 1층 상가와 한글 간판, 옥상 광고판·실외기·물탱크, 아파트 동번호, 버스 정류장, 보행자, 보행 신호등, 차선 화살표, 맨홀, 교차로 도로명 표지판, 가로수·가로등. 밤엔 NPC 전조등·브레이크등.
 - 외벽은 ambientCG CC0 사진 질감(유리·오피스·벽돌)과 절차 생성(한국식 아파트, 1층 상가, 한글 간판, 옥상 광고판), 나무는 Kenney 모델이에요. 햇빛 그림자와 필름 톤매핑을 써요.
 - 7개 구 전체로 넓히는 계획은 `docs/streaming-plan.md` 에 있어요 (타일 스트리밍 필요).
 - 중앙 황색 실선, 차선 점선, 신호 교차로의 정지선·횡단보도·신호등. 신호 없는 골목 교차로는 먼저 온 차가 지나가요.
@@ -44,11 +46,11 @@ npm run preview  # 빌드 결과 확인
 ### 다른 지역으로 바꾸기
 
 ```bash
-npm run map:fetch -- 37.490 127.000 37.540 127.070   # south west north east. 2.2km 타일로 나눠 받고, Overpass 가 바쁘면 알아서 재시도해요
-npm run map:build                                     # data/osm-raw.json → public/map/seoul.json
+npm run map:fetch -- 37.44 126.95 37.575 127.18      # south west north east. 2.2km 타일로 나눠 받고, Overpass 가 바쁘면 알아서 재시도해요
+npm run map:build -- data/osm-raw.json public/map/seoul   # 1km 타일 + index.json + overview.png
 ```
 
-영역이 넓을수록 건물과 교통량이 늘어 무거워져요. 3km × 3km 안쪽을 권해요. 사내망처럼 인증서 폐기 확인이 막힌 곳을 위해 `curl --ssl-no-revoke` 로 받아요.
+넓은 영역은 미러별로 병렬로 받을 수 있어요: `TILE_SHARD=0/3`, `1/3`, `2/3` 으로 세 프로세스를 띄운 뒤, 다 끝나면 shard 없이 한 번 더 실행해 합쳐요. 받은 타일은 `data/tiles/<bbox>/` 에 남아 이어받아요. 사내망처럼 인증서 폐기 확인이 막힌 곳을 위해 `curl --ssl-no-revoke` 로 받아요.
 
 ## 교통
 

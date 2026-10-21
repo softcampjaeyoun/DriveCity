@@ -37,9 +37,11 @@ export function createBigMap(root: HTMLElement, g: RoadGraph, placeOf: (x: numbe
   let open = false;
   const { minX, maxX, minZ, maxZ } = g.bbox;
   // 보기 상태: 중심(월드 좌표)과 배율(화면 px / m)
-  const OPEN_ZOOM = 2.5;
-  const MAX_ZOOM = 10;
-  let zoom = OPEN_ZOOM; // 전체가 들어오는 배율에 곱하는 값. 1 = 전체 보기
+  const OPEN_VIEW_M = 2600; // 열었을 때 가로로 보이는 거리. 지도가 아무리 커도 같은 축척으로 시작
+  const MAX_ZOOM = 40;
+  /** 가로 OPEN_VIEW_M 가 화면에 들어오는 배율 */
+  const openZoom = () => Math.max(1, root.clientWidth / (fitScale() * OPEN_VIEW_M));
+  let zoom = 1; // 전체가 들어오는 배율에 곱하는 값. 1 = 전체 보기
   let panX = 0;
   let panZ = 0;
   let dragging = false;
@@ -125,7 +127,7 @@ export function createBigMap(root: HTMLElement, g: RoadGraph, placeOf: (x: numbe
     },
     { passive: false },
   );
-  root.addEventListener('dblclick', () => centerOnPlayer(OPEN_ZOOM));
+  root.addEventListener('dblclick', () => centerOnPlayer(openZoom()));
   const stop = (e: Event) => e.stopPropagation();
   for (const b of [btnIn, btnOut, btnFit, btnMe]) {
     b.addEventListener('pointerdown', stop);
@@ -146,7 +148,7 @@ export function createBigMap(root: HTMLElement, g: RoadGraph, placeOf: (x: numbe
   });
   btnMe.addEventListener('click', (e) => {
     e.stopPropagation();
-    centerOnPlayer(Math.max(zoom, OPEN_ZOOM));
+    centerOnPlayer(Math.max(zoom, openZoom()));
   });
   // 좌클릭은 닫기. 드래그 직후의 클릭은 무시
   root.addEventListener('click', (e) => {
@@ -164,7 +166,7 @@ export function createBigMap(root: HTMLElement, g: RoadGraph, placeOf: (x: numbe
     toggle() {
       open = !open;
       root.hidden = !open;
-      if (open) centerOnPlayer(OPEN_ZOOM);
+      if (open) centerOnPlayer(openZoom());
     },
     draw(t, S, npcs, target, extra) {
       playerX = S.x;
