@@ -322,7 +322,7 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
     if (Math.abs(wantLat - curLat) > 0.1) {
       if (laneClear(n, S, wantLat)) {
         n.laneCool = 3;
-        n.lane = Math.round((wantLat - g.laneOffset(n.seg.e, n.seg.dir, 0)) / 3.3);
+        n.lane = Math.round((wantLat - g.laneOffset(n.seg.e, n.seg.dir, 0)) / n.seg.e.laneW);
       } else n.latTarget = curLat;
       return;
     }

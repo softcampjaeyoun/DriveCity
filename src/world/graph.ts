@@ -15,6 +15,8 @@ export interface Edge extends EdgeData {
   width: number;
   half: number;
   rank: number;
+  /** 차선 폭. 골목은 좁다 */
+  laneW: number;
 }
 
 export interface PointOn {
@@ -76,8 +78,11 @@ export function buildGraph(map: MapData): RoadGraph {
     const cum = [0];
     for (let i = 2; i < d.pts.length; i += 2) cum.push(cum[cum.length - 1] + Math.hypot(d.pts[i] - d.pts[i - 2], d.pts[i + 1] - d.pts[i - 1]));
     const lanesTotal = d.lb === 0 ? d.lf : d.lf + d.lb;
-    const width = lanesTotal * LANE_W;
-    return { ...d, id, cum, len: cum[cum.length - 1] || d.len, width, half: width / 2, rank: CLASS_RANK[d.cls] ?? 6 };
+    const rank = CLASS_RANK[d.cls] ?? 6;
+    // 골목(residential·living_street)은 실제로 좁아서 차선 폭을 줄여야 건물과 안 겹친다
+    const laneW = rank >= 6 ? 2.6 : LANE_W;
+    const width = lanesTotal * laneW;
+    return { ...d, id, cum, len: cum[cum.length - 1] || d.len, width, half: width / 2, rank, laneW };
   });
   const out: number[][] = nodes.map(() => []);
   for (const e of edges) {
@@ -249,8 +254,8 @@ export function buildGraph(map: MapData): RoadGraph {
     laneOffset(e, dir, lane) {
       const n = dir === 1 ? e.lf : e.lb;
       const i = Math.min(Math.max(0, lane), n - 1);
-      if (e.lb === 0) return (i + 0.5 - n / 2) * LANE_W; // 일방통행은 도로 전체를 쓴다
-      return (i + 0.5) * LANE_W;
+      if (e.lb === 0) return (i + 0.5 - n / 2) * e.laneW; // 일방통행은 도로 전체를 쓴다
+      return (i + 0.5) * e.laneW;
     },
     pointAt,
     cut(e, n) {

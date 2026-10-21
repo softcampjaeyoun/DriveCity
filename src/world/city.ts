@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mulberry32 } from '../util/math.ts';
 import { aptTextures, billboardTexture, dongTexture, facadeSet, loadMerged, loadTex, signTexture, storefrontTextures, wallRepeat } from '../render/assets.ts';
 import { glowTexture, windowTexture } from '../render/textures.ts';
-import { LANE_W, type Node, type RoadGraph } from './graph.ts';
+import type { Node, RoadGraph } from './graph.ts';
 import type { BuildingData, MapData } from './mapdata.ts';
 import { pointInRing } from './collision.ts';
 import { rightOf } from './roads.ts';
@@ -287,9 +287,9 @@ export function buildCity(scene: THREE.Scene, map: MapData, g: RoadGraph, isSign
       }
       const offs: number[] = [];
       if (twoWay) {
-        for (let i = 1; i < e.lf; i++) offs.push(i * LANE_W);
-        for (let i = 1; i < e.lb; i++) offs.push(-i * LANE_W);
-      } else for (let i = 1; i < e.lf; i++) offs.push((i - e.lf / 2) * LANE_W);
+        for (let i = 1; i < e.lf; i++) offs.push(i * e.laneW);
+        for (let i = 1; i < e.lb; i++) offs.push(-i * e.laneW);
+      } else for (let i = 1; i < e.lf; i++) offs.push((i - e.lf / 2) * e.laneW);
       if (offs.length) {
         for (let s = 2; s < e.len - 2; s += 7) {
           const p = g.pointAt(e, 1, s);
@@ -305,7 +305,7 @@ export function buildCity(scene: THREE.Scene, map: MapData, g: RoadGraph, isSign
         if (!g.canTravel(e, dir)) continue;
         const cut = g.cut(e, n);
         const lanes = g.lanes(e, dir);
-        const laneSpan = lanes * LANE_W;
+        const laneSpan = lanes * e.laneW;
         const p = g.pointAt(e, dir, Math.max(0, e.len - cut - 1.2));
         const [rx, rz] = rightOf(p.hx, p.hz);
         const yaw = Math.atan2(p.hx, p.hz);

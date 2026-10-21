@@ -376,7 +376,7 @@ for (const n of osmNodes.values()) {
       for (let k = 0; k <= n; k++) put(e.pts[i] + ((e.pts[i + 2] - e.pts[i]) * k) / n, e.pts[i + 1] + ((e.pts[i + 3] - e.pts[i + 1]) * k) / n, id);
     }
   });
-  const halfOf = (e) => ((e.lb === 0 ? e.lf : e.lf + e.lb) * 3.3) / 2;
+  const halfOf = (e) => ((e.lb === 0 ? e.lf : e.lf + e.lb) * (CLASS_RANK[e.cls] >= 6 ? 2.6 : 3.3)) / 2;
   /** 가장 가까운 도로: 거리(도로 가장자리 기준), 방향 */
   function nearestRoad(x, z, maxD) {
     let best = null;
@@ -453,6 +453,18 @@ for (const n of osmNodes.values()) {
       if (hit) buildings.splice(i, 1);
     }
     console.log(`  고가·터널과 겹치는 건물 ${before - buildings.length}동 제거`);
+    // 도로 면(차선 폭) 안으로 들어온 OSM 건물도 뺀다. 좁은 골목 지도는 건물과 길이 조금씩 겹친다
+    const before2 = buildings.length;
+    for (let i = buildings.length - 1; i >= 0; i--) {
+      const r = buildings[i].ring;
+      let intrudes = false;
+      for (let k = 0; k < r.length && !intrudes; k += 2) {
+        const road = nearestRoad(r[k], r[k + 1], 20);
+        if (road && road.d < -0.2) intrudes = true;
+      }
+      if (intrudes) buildings.splice(i, 1);
+    }
+    console.log(`  도로 면을 침범한 건물 ${before2 - buildings.length}동 제거`);
     // occupied 색인도 다시 만든다
     occupied.length = 0;
     bCells.clear();
