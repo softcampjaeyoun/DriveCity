@@ -87,6 +87,8 @@ export interface Traffic {
   assignRoute(n: Npc, goal: Node): void;
   /** 수배 등급에 맞춰 경찰 몇 대가 추격할지 */
   setChase(count: number, playerNode: Node): void;
+  /** 0 낮 .. 1 밤: 전조등·후미등 번짐 세기 */
+  setNight(night: number): void;
 }
 
 const LANE_RATE = 2.2;
@@ -121,11 +123,24 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
       red.visible = blue.visible = false;
       police = { chasing: false, lights: [red, blue], routeTimer: 0, blink: 0 };
     }
+    // 밤 전조등·후미등 바닥 번짐. 밤에만 보이고 브레이크 때 후미등이 밝아진다
+    const head = new THREE.Mesh(headGlowGeo, headGlowMat);
+    head.position.set(0, 0.05, kind.length / 2 + 3.6);
+    head.name = 'headGlow';
+    const tail = new THREE.Mesh(tailGlowGeo, new THREE.MeshBasicMaterial({ map: tailTex, color: 0xff2a2a, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending }));
+    tail.position.set(0, 0.05, -kind.length / 2 - 1.1);
+    tail.name = 'tailGlow';
+    mesh.add(head, tail);
     const pool = kind.models;
     swapModel(mesh, visual, rival ? rival.model : pool?.length ? pool[index % pool.length] : undefined, kind.tintModel ? hex : undefined);
     scene.add(mesh);
     return { mesh, police };
   }
+  const headGlowGeo = new THREE.PlaneGeometry(3.2, 8).rotateX(-Math.PI / 2);
+  const tailGlowGeo = new THREE.PlaneGeometry(2.4, 2.4).rotateX(-Math.PI / 2);
+  const headGlowMat = new THREE.MeshBasicMaterial({ map: glowTexture('rgba(255,240,200,0.55)'), transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
+  const tailTex = glowTexture('rgba(255,80,80,0.6)');
+  let nightK = 1;
 
   const npcs: Npc[] = [];
   const police: Npc[] = [];
@@ -463,7 +478,10 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
         if (n.cool > 0) n.cool -= dt;
         if (n.laneCool > 0) n.laneCool -= dt;
         const heavy = n.kind.length > 8 ? 0.6 : 1;
+        const braking = want < n.speed - 0.5;
         n.speed += (want - n.speed) * Math.min(1, dt * (want < n.speed ? 3 : 1.2) * heavy);
+        const tail = n.mesh.getObjectByName('tailGlow') as THREE.Mesh | undefined;
+        if (tail) (tail.material as THREE.MeshBasicMaterial).opacity = braking ? 0.35 + 0.5 * nightK : 0.4 * nightK;
         n.s += n.speed * dt;
         let guard = 0;
         while (guard++ < 4) {
@@ -563,6 +581,11 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
     assignRoute(n, goal) {
       n.route = g.route(n.node, goal);
       if (n.seg.kind === 'edge') planNext(n, n.seg);
+    },
+
+    setNight(night) {
+      nightK = night;
+      headGlowMat.opacity = night;
     },
 
     setChase(count, playerNode) {

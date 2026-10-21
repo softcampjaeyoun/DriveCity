@@ -252,6 +252,58 @@ export function storefrontTextures(seed: number): { map: THREE.CanvasTexture; em
   return { map: toTex(c), emissive: toTex(e) };
 }
 
+/** 차선 바닥 화살표 (직진 / 좌회전 / 우회전 / 직진+우회전). 세로로 긴 1:2.5 */
+export function arrowTexture(kind: 'straight' | 'left' | 'right' | 'straightRight'): THREE.CanvasTexture {
+  const [c, g] = canvas(128, 320);
+  g.clearRect(0, 0, 128, 320);
+  g.fillStyle = '#f0f2f6';
+  const shaft = (x: number, y0: number, y1: number, w: number) => g.fillRect(x - w / 2, y0, w, y1 - y0);
+  const head = (x: number, y: number, dirx: number, diry: number, size: number) => {
+    g.beginPath();
+    g.moveTo(x + dirx * size, y + diry * size);
+    g.lineTo(x - diry * size * 0.75, y + dirx * size * 0.75);
+    g.lineTo(x + diry * size * 0.75, y - dirx * size * 0.75);
+    g.closePath();
+    g.fill();
+  };
+  if (kind === 'straight' || kind === 'straightRight') {
+    shaft(64, 70, 300, 18);
+    head(64, 70, 0, -1, 44);
+  }
+  if (kind === 'left') {
+    shaft(64, 120, 300, 18);
+    g.fillRect(24, 111, 50, 18);
+    head(24, 120, -1, 0, 40);
+  }
+  if (kind === 'right' || kind === 'straightRight') {
+    const y = kind === 'right' ? 120 : 170;
+    if (kind === 'right') shaft(64, y, 300, 18);
+    g.fillRect(55, y - 9, 50, 18);
+    head(104, y, 1, 0, 40);
+  }
+  const t = toTex(c);
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  return t;
+}
+
+/** 도로명 표지판 (초록 바탕 흰 글씨, 4:1) */
+export function streetSignTexture(name: string): THREE.CanvasTexture {
+  const [c, g] = canvas(512, 128);
+  g.fillStyle = '#2c7a3c';
+  g.fillRect(0, 0, 512, 128);
+  g.strokeStyle = '#ffffff';
+  g.lineWidth = 6;
+  g.strokeRect(6, 6, 500, 116);
+  g.fillStyle = '#ffffff';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.font = `${name.length > 7 ? 52 : 64}px ${BOLD}`;
+  g.fillText(name, 256, 60);
+  const t = toTex(c);
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  return t;
+}
+
 /** 구름 레이어 (알파) */
 export function cloudTexture(): THREE.CanvasTexture {
   const r = mulberry32(777);

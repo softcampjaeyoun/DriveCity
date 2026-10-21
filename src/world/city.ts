@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mulberry32 } from '../util/math.ts';
-import { aptTextures, billboardTexture, dongTexture, facadeSet, loadMerged, loadTex, signTexture, storefrontTextures, type MergedModel } from '../render/assets.ts';
+import { aptTextures, arrowTexture, billboardTexture, dongTexture, facadeSet, loadMerged, loadTex, signTexture, storefrontTextures, streetSignTexture, type MergedModel } from '../render/assets.ts';
 import { glowTexture, windowTexture } from '../render/textures.ts';
 import type { Node, RoadGraph } from './graph.ts';
 import type { BuildingData, MapIndex, TileData } from './mapdata.ts';
@@ -215,7 +215,23 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
   const shelterMat = new THREE.MeshStandardMaterial({ color: 0x3b4451, roughness: 0.5, metalness: 0.3 });
   const shelterGlassMat = new THREE.MeshPhongMaterial({ color: 0x9fc0e0, transparent: true, opacity: 0.45, shininess: 120 });
   const shelterSignMat = new THREE.MeshBasicMaterial({ color: 0x1f6fd1 });
-  const streetSignMat = new THREE.MeshBasicMaterial({ color: 0x2c7a3c });
+  const manholeMat = new THREE.MeshStandardMaterial({ color: 0x3a3d44, roughness: 0.6, metalness: 0.5 });
+  const arrowMats = {
+    straight: new THREE.MeshBasicMaterial({ map: arrowTexture('straight'), transparent: true, depthWrite: false }),
+    left: new THREE.MeshBasicMaterial({ map: arrowTexture('left'), transparent: true, depthWrite: false }),
+    right: new THREE.MeshBasicMaterial({ map: arrowTexture('right'), transparent: true, depthWrite: false }),
+    straightRight: new THREE.MeshBasicMaterial({ map: arrowTexture('straightRight'), transparent: true, depthWrite: false }),
+  };
+  /** 도로명 표지판 텍스처는 이름마다 하나 (타일을 넘어 공유) */
+  const streetSignMats = new Map<string, THREE.MeshBasicMaterial>();
+  const streetSignMat = (name: string) => {
+    let m = streetSignMats.get(name);
+    if (!m) {
+      m = new THREE.MeshBasicMaterial({ map: streetSignTexture(name), side: THREE.DoubleSide });
+      streetSignMats.set(name, m);
+    }
+    return m;
+  };
 
   const windows = (seed: number) => {
     const t = windowTexture(seed);
@@ -261,6 +277,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
   const lampGeo = new THREE.CylinderGeometry(0.12, 0.16, 7.5, 6);
   const poolGeo = new THREE.PlaneGeometry(17, 17).rotateX(-Math.PI / 2);
   const tankGeo = new THREE.CylinderGeometry(0.9, 0.9, 1.6, 10);
+  const manholeGeo = new THREE.CircleGeometry(0.4, 12).rotateX(-Math.PI / 2);
 
   // ----- 나무 모델 (한 번만 로드) -----
   let treeModels: MergedModel[] | null = null;
@@ -431,6 +448,39 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
       addInstanced(unitPlane, yellowMat, yellow);
       addInstanced(unitPlane, whiteMat, white);
       addInstanced(unitPlane, barMat, bars);
+
+      // 신호 교차로 진입 차선마다 바닥 화살표: 맨 오른쪽 우회전, 맨 왼쪽 좌회전(또는 직진), 가운데 직진
+      const arrows: Record<keyof typeof arrowMats, Placement[]> = { straight: [], left: [], right: [], straightRight: [] };
+      for (const [n] of tile.nodes) {
+        if (!isSignal(n)) continue;
+        for (const e of g.edgesAt(n)) {
+          const dir = g.dirInto(e, n);
+          if (!g.canTravel(e, dir) || e.rank > 4) continue;
+          const lanes = g.lanes(e, dir);
+          const cut = g.cut(e, n);
+          const p = g.pointAt(e, dir, Math.max(0, e.len - cut - 9));
+          const [rx, rz] = rightOf(p.hx, p.hz);
+          const yaw = Math.atan2(p.hx, p.hz);
+          for (let lane = 0; lane < lanes; lane++) {
+            const lat = g.laneOffset(e, dir, lane);
+            const kind: keyof typeof arrowMats = lanes === 1 ? 'straight' : lane === lanes - 1 ? (lanes >= 3 ? 'right' : 'straightRight') : lane === 0 ? 'left' : 'straight';
+            arrows[kind].push({ x: p.x + rx * lat, y: 0.037, z: p.z + rz * lat, yaw, w: 1.0, h: 1, d: 2.5 });
+          }
+        }
+      }
+      for (const k of Object.keys(arrows) as Array<keyof typeof arrowMats>) addInstanced(unitPlane, arrowMats[k], arrows[k]);
+      // 맨홀: 큰길 60m 마다 하나, 차선 하나에 무작위
+      const manholes: Placement[] = [];
+      for (const e of edges) {
+        if (e.rank > 4 || e.bridge) continue;
+        for (let s = 25 + rand() * 20; s < e.len - 10; s += 60) {
+          const p = g.pointAt(e, 1, s);
+          const [rx, rz] = rightOf(p.hx, p.hz);
+          const lat = (rand() - 0.5) * (e.width - 1.5);
+          manholes.push({ x: p.x + rx * lat, y: 0.034, z: p.z + rz * lat, yaw: 0, w: 1, h: 1 });
+        }
+      }
+      addInstanced(manholeGeo, manholeMat, manholes);
     }
 
     // ----- 건물 -----
@@ -615,14 +665,14 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
       addInstanced(unitBox, shelterSignMat, signs);
     }
 
-    // ----- 교차로 도로명 표지판 -----
+    // ----- 교차로 도로명 표지판 (교차하는 길 이름을 글씨로) -----
     {
-      const signs: Placement[] = [];
       const posts: Placement[] = [];
+      const byName = new Map<string, Placement[]>();
       for (const [n] of tile.nodes) {
-        if (!isSignal(n) || rand() > 0.5) continue;
+        if (!isSignal(n) || rand() > 0.6) continue;
         const es = g.edgesAt(n).filter((e) => e.name && e.rank <= 4);
-        if (!es.length) continue;
+        if (es.length < 1) continue;
         const e = es[0];
         const dir = g.dirInto(e, n);
         const p = g.pointAt(e, dir, Math.max(0, e.len - g.cut(e, n) - 2));
@@ -630,11 +680,22 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
         const x = p.x + rx * (e.half + 1.6);
         const z = p.z + rz * (e.half + 1.6);
         posts.push({ x, y: 1.6, z, yaw: 0, w: 0.08, h: 3.2, d: 0.08 });
-        signs.push({ x, y: 3.0, z, yaw: Math.atan2(p.hx, p.hz) + Math.PI / 2, w: 1.6, h: 0.4, d: 0.05 });
         obstacles.push({ x, z, r: 0.08 });
+        // 내 길 이름은 진행 방향과 나란히, 교차하는 길 이름은 그 길 방향으로 위에
+        const cross = g.edgesAt(n).find((o) => o.name && o.name !== e.name && o.rank <= 4);
+        const names: Array<[string, number, number]> = [[e.name, Math.atan2(p.hx, p.hz) + Math.PI / 2, 2.75]];
+        if (cross) {
+          const q = g.pointAt(cross, 1, Math.min(cross.len - 0.5, 3));
+          names.push([cross.name, Math.atan2(q.hx, q.hz) + Math.PI / 2, 3.25]);
+        }
+        for (const [name, yaw, y] of names) {
+          const list = byName.get(name) ?? [];
+          list.push({ x, y, z, yaw, w: 1.8, h: 0.45 });
+          byName.set(name, list);
+        }
       }
       addInstanced(unitBox, poleMat, posts);
-      addInstanced(unitBox, streetSignMat, signs);
+      for (const [name, list] of byName) addInstanced(plane, streetSignMat(name), list);
     }
 
     // ----- 나무 -----

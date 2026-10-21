@@ -66,6 +66,7 @@ const weather = createWeather(scene, city, (b, s) => hud.toast(b, s, 2.4));
 const daylight = createDaylight(stage, (n) => {
   city.setNight(n);
   pedestrians.setNight(n);
+  traffic.setNight(n);
 });
 stage.setBloom(save.settings.fx);
 

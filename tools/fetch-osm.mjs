@@ -57,7 +57,11 @@ for (let i = 0; i < nx; i++) {
     });
   }
 }
-console.log(`[fetch] 영역 ${south},${west} ~ ${north},${east} (약 ${areaKm2} km², 타일 ${tiles.length}개)`);
+// 병렬 수집: TILE_SHARD="k/n" 이면 n 개 중 k 번째 몫만 받는다 (미러마다 프로세스를 하나씩 띄울 때). 합치기는 shard 없이 다시 실행
+const shard = (process.env.TILE_SHARD ?? '').match(/^(\d+)\/(\d+)$/);
+const myTiles = shard ? tiles.filter((_, i) => i % Number(shard[2]) === Number(shard[1])) : tiles;
+if (shard) MIRRORS.unshift(...MIRRORS.splice(Number(shard[1]) % MIRRORS.length, 1));
+console.log(`[fetch] 영역 ${south},${west} ~ ${north},${east} (약 ${areaKm2} km², 타일 ${tiles.length}개${shard ? `, 이 프로세스는 ${myTiles.length}개` : ''})`);
 console.log('[fetch] Overpass 서버가 혼잡하면 타일마다 몇 분 걸릴 수 있어요. 받은 타일은 data/tiles/ 에 남겨 두고 다시 실행하면 이어서 받아요.');
 
 function attempt(url, tile) {
@@ -125,8 +129,9 @@ async function fetchTile(tile) {
 // 타일을 모아 하나로 (같은 요소는 한 번만)
 const seen = new Set();
 const elements = [];
-for (const tile of tiles) {
+for (const tile of myTiles) {
   const json = await fetchTile(tile);
+  if (shard) continue; // 몫만 받는 프로세스는 합치지 않는다
   for (const el of json.elements) {
     const key = `${el.type}/${el.id}`;
     if (seen.has(key)) {
@@ -142,6 +147,10 @@ for (const tile of tiles) {
   }
   // 타일 사이에 잠깐 쉬어 서버를 배려
   if (tiles.length > 1) await sleep(3000);
+}
+if (shard) {
+  console.log(`[fetch] 몫 ${shard[1]}/${shard[2]} 완료. 모두 끝나면 TILE_SHARD 없이 다시 실행해 합치세요.`);
+  process.exit(0);
 }
 writeFileSync(OUT_RAW, JSON.stringify({ version: 0.6, elements }));
 const kinds = {};
