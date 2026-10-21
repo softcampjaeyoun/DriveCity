@@ -2,7 +2,10 @@ import * as THREE from 'three';
 import { DIRS, N, reduceMotion } from '../config.ts';
 import { glowTexture, nameTag } from '../render/textures.ts';
 import { rint } from '../util/math.ts';
-import { PROBE, type PlayerState } from '../vehicle/player.ts';
+import { KINDS, TRAFFIC_MIX, probesFor, type VehicleKind } from '../vehicle/kinds.ts';
+import { swapModel } from '../vehicle/models.ts';
+import { buildForKind, buildSedan } from '../vehicle/procedural.ts';
+import { PROBE, RADIUS, type PlayerState } from '../vehicle/player.ts';
 import { curveSeg, dirHeading, inGrid, lineSeg, nodePos, segAt, type Node, type Segment } from '../world/roads.ts';
 
 export interface RivalSpec {
@@ -15,10 +18,16 @@ export interface RivalSpec {
   reward: number;
   /** 배틀 중 기본 속도 m/s */
   pace: number;
+  /** models.ts 의 MODELS 키 */
+  model?: string;
 }
 
 export interface Npc {
   mesh: THREE.Group;
+  kind: VehicleKind;
+  /** 충돌 원 중심 오프셋 (앞 +) */
+  probes: number[];
+  radius: number;
   from: Node;
   to: Node;
   dir: number;
@@ -37,14 +46,10 @@ export interface Npc {
 }
 
 export const RIVALS: readonly RivalSpec[] = [
-  { name: '다크나이트', body: 0x15151c, glow: 'rgba(155,92,255,0.85)', hex: '#9b5cff', level: 1, reward: 800, pace: 34 },
-  { name: '블루스톰', body: 0x1f4fd6, glow: 'rgba(79,209,255,0.85)', hex: '#4fd1ff', level: 2, reward: 1600, pace: 44 },
-  { name: '레드폭스', body: 0xc0202c, glow: 'rgba(255,122,60,0.85)', hex: '#ff7a3c', level: 3, reward: 3200, pace: 56 },
+  { name: '다크나이트', body: 0x15151c, glow: 'rgba(155,92,255,0.85)', hex: '#9b5cff', level: 1, reward: 800, pace: 34, model: 'rival_1' },
+  { name: '블루스톰', body: 0x1f4fd6, glow: 'rgba(79,209,255,0.85)', hex: '#4fd1ff', level: 2, reward: 1600, pace: 44, model: 'rival_2' },
+  { name: '레드폭스', body: 0xc0202c, glow: 'rgba(255,122,60,0.85)', hex: '#ff7a3c', level: 3, reward: 3200, pace: 56, model: 'rival_3' },
 ];
-
-// 서울 느낌: 흰색·은색·검정 승용차 사이로 주황 택시
-const TRAFFIC_COLORS = [0xd9dce3, 0x9aa1ad, 0x23252c, 0x2c3e66, 0xf08a24, 0xf08a24, 0x6b1f24, 0xe7e2d6];
-const TRAFFIC_COUNT = 34;
 
 export interface Traffic {
   npcs: Npc[];
@@ -55,43 +60,11 @@ export interface Traffic {
 }
 
 export function createTraffic(scene: THREE.Scene): Traffic {
-  const bodyGeo = new THREE.BoxGeometry(1.9, 0.6, 4.1);
-  const cabinGeo = new THREE.BoxGeometry(1.6, 0.5, 2.0);
-  const wheelGeo = new THREE.BoxGeometry(2.04, 0.5, 0.74);
-  const lightGeo = new THREE.BoxGeometry(0.45, 0.13, 0.05);
-  const dark = new THREE.MeshPhongMaterial({ color: 0x0c0e14, shininess: 120, specular: 0x8899bb });
-  const wheelMat = new THREE.MeshLambertMaterial({ color: 0x111216 });
-  const headMat = new THREE.MeshBasicMaterial({ color: 0xfff6dc });
-  const tailMat = new THREE.MeshBasicMaterial({ color: 0x8a0f18 });
-  const bodyMats = new Map<number, THREE.Material>();
-  const bodyMat = (hex: number) => {
-    let m = bodyMats.get(hex);
-    if (!m) {
-      m = new THREE.MeshPhongMaterial({ color: hex, shininess: 60, specular: 0x333333 });
-      bodyMats.set(hex, m);
-    }
-    return m;
-  };
-
-  function buildMesh(hex: number, rival: RivalSpec | null): THREE.Group {
+  function buildMesh(kind: VehicleKind, hex: number, rival: RivalSpec | null, index: number): THREE.Group {
     const g = new THREE.Group();
-    const b = new THREE.Mesh(bodyGeo, bodyMat(hex));
-    b.position.y = 0.72;
-    const c = new THREE.Mesh(cabinGeo, dark);
-    c.position.set(0, 1.27, -0.2);
-    g.add(b, c);
-    for (const z of [1.3, -1.3]) {
-      const w = new THREE.Mesh(wheelGeo, wheelMat);
-      w.position.set(0, 0.36, z);
-      g.add(w);
-    }
-    for (const x of [-0.6, 0.6]) {
-      const h = new THREE.Mesh(lightGeo, headMat);
-      h.position.set(x, 0.8, 2.06);
-      const t = new THREE.Mesh(lightGeo, tailMat);
-      t.position.set(x, 0.85, -2.06);
-      g.add(h, t);
-    }
+    const visual = rival ? buildSedan(hex, kind.length, kind.width) : buildForKind(kind, hex);
+    visual.name = 'fallback';
+    g.add(visual);
     if (rival) {
       const ug = new THREE.Mesh(
         new THREE.PlaneGeometry(3.4, 6).rotateX(-Math.PI / 2),
@@ -105,12 +78,14 @@ export function createTraffic(scene: THREE.Scene): Traffic {
       ug.position.y = 0.04;
       g.add(ug, nameTag(`${rival.name} Lv${rival.level}`, rival.hex));
     }
+    const pool = kind.models;
+    swapModel(g, visual, rival ? rival.model : pool?.length ? pool[index % pool.length] : undefined, kind.tintModel ? hex : undefined);
     scene.add(g);
     return g;
   }
 
   const npcs: Npc[] = [];
-  function spawn(hex: number, rival: RivalSpec | null): void {
+  function spawn(kind: VehicleKind, hex: number, rival: RivalSpec | null, index = 0): void {
     let from: Node;
     let dir: number;
     do {
@@ -120,8 +95,12 @@ export function createTraffic(scene: THREE.Scene): Traffic {
     const seg = lineSeg(from, dir);
     const s = Math.random() * seg.len;
     const [x, z] = segAt(seg, s);
+    const [c0, c1] = kind.cruise;
     const n: Npc = {
-      mesh: buildMesh(hex, rival),
+      mesh: buildMesh(kind, hex, rival, index),
+      kind,
+      probes: probesFor(kind.length),
+      radius: kind.width / 2 + 0.15,
       from,
       dir,
       to: [from[0] + DIRS[dir][0], from[1] + DIRS[dir][1]],
@@ -129,7 +108,7 @@ export function createTraffic(scene: THREE.Scene): Traffic {
       seg,
       s,
       speed: 0,
-      cruise: rival ? 13 : 8 + Math.random() * 6,
+      cruise: c0 + Math.random() * (c1 - c0),
       stun: 0,
       x,
       z,
@@ -142,8 +121,11 @@ export function createTraffic(scene: THREE.Scene): Traffic {
     n.mesh.rotation.y = n.h;
     npcs.push(n);
   }
-  for (let i = 0; i < TRAFFIC_COUNT; i++) spawn(TRAFFIC_COLORS[i % TRAFFIC_COLORS.length], null);
-  for (const r of RIVALS) spawn(r.body, r);
+  for (const [id, count] of TRAFFIC_MIX) {
+    const kind = KINDS[id];
+    for (let i = 0; i < count; i++) spawn(kind, kind.colors[i % kind.colors.length], null, i);
+  }
+  for (const r of RIVALS) spawn(KINDS.rival, r.body, r);
 
   function chooseDir(n: Npc): number {
     const next = n.route.shift();
@@ -170,21 +152,22 @@ export function createTraffic(scene: THREE.Scene): Traffic {
     n.to = [n.from[0] + DIRS[d2][0], n.from[1] + DIRS[d2][1]];
   }
 
-  /** 같은 방향으로 앞에 있는 차(또는 플레이어)까지의 거리 */
+  /** 같은 방향으로 앞에 있는 차(또는 플레이어)의 뒷범퍼까지의 거리 */
   function gapAhead(n: Npc, S: PlayerState): number {
     const fx = Math.sin(n.h);
     const fz = Math.cos(n.h);
+    const myFront = n.kind.length / 2;
     let best = Infinity;
-    const test = (ox: number, oz: number, oh: number | null) => {
+    const test = (ox: number, oz: number, oh: number | null, oHalf: number) => {
       const dx = ox - n.x;
       const dz = oz - n.z;
-      const fwd = dx * fx + dz * fz;
-      if (fwd <= 0 || fwd > 16 || Math.abs(dx * fz - dz * fx) > 2.4) return;
+      const fwd = dx * fx + dz * fz - myFront - oHalf;
+      if (fwd <= -oHalf || fwd > 16 || Math.abs(dx * fz - dz * fx) > 2.4) return;
       if (oh !== null && Math.sin(oh) * fx + Math.cos(oh) * fz < 0.3) return;
-      best = Math.min(best, fwd);
+      best = Math.min(best, Math.max(0, fwd));
     };
-    for (const o of npcs) if (o !== n) test(o.x, o.z, o.h);
-    test(S.x, S.z, null);
+    for (const o of npcs) if (o !== n) test(o.x, o.z, o.h, o.kind.length / 2);
+    test(S.x, S.z, null, 2.1);
     return best;
   }
 
@@ -199,16 +182,18 @@ export function createTraffic(scene: THREE.Scene): Traffic {
           if (n.seg.c && n.seg.turn) want = 15;
           else want = turnSoon ? 17 : racePace(n);
         } else {
-          want = n.seg.turn ? Math.min(n.cruise, 7) : n.cruise;
+          want = n.seg.turn ? Math.min(n.cruise, n.kind.turnSpeed) : n.cruise;
           const gap = gapAhead(n, S);
-          if (gap < 16) want = Math.min(want, Math.max(0, (gap - 6) * 1.4));
+          if (gap < 14) want = Math.min(want, Math.max(0, (gap - 4) * 1.4));
         }
         if (n.stun > 0) {
           n.stun -= dt;
           want = 0;
         }
         if (n.cool > 0) n.cool -= dt;
-        n.speed += (want - n.speed) * Math.min(1, dt * (want < n.speed ? 3 : 1.2));
+        // 버스는 무거워서 가감속이 느리다
+        const heavy = n.kind.length > 8 ? 0.6 : 1;
+        n.speed += (want - n.speed) * Math.min(1, dt * (want < n.speed ? 3 : 1.2) * heavy);
         n.s += n.speed * dt;
         while (n.s >= n.seg.len) {
           n.s -= n.seg.len;
@@ -230,31 +215,36 @@ export function createTraffic(scene: THREE.Scene): Traffic {
       const fz = Math.cos(S.h);
       let hit = 0;
       for (const n of npcs) {
-        if (Math.abs(n.x - S.x) > 7 || Math.abs(n.z - S.z) > 7) continue;
+        const reach = n.kind.length / 2 + 4;
+        if (Math.abs(n.x - S.x) > reach || Math.abs(n.z - S.z) > reach) continue;
         const nfx = Math.sin(n.h);
         const nfz = Math.cos(n.h);
+        const minD = RADIUS + n.radius;
+        // 버스는 플레이어보다 훨씬 무거워 거의 밀리지 않는다
+        const mass = n.kind.length > 8 ? 6 : n.kind.length > 6 ? 3 : 1;
         for (const a of PROBE) {
-          for (const b of PROBE) {
+          for (const b of n.probes) {
             const qx = n.x + nfx * b;
             const qz = n.z + nfz * b;
             let dx = S.x + fx * a - qx;
             let dz = S.z + fz * a - qz;
             const d = Math.hypot(dx, dz);
-            if (d >= 2.2 || d < 1e-4) continue;
+            if (d >= minD || d < 1e-4) continue;
             dx /= d;
             dz /= d;
-            S.x += dx * (2.2 - d);
-            S.z += dz * (2.2 - d);
+            S.x += dx * (minD - d);
+            S.z += dz * (minD - d);
             const rel = (S.vx - nfx * n.speed) * dx + (S.vz - nfz * n.speed) * dz;
             if (rel < 0) {
-              S.vx -= 1.2 * rel * dx;
-              S.vz -= 1.2 * rel * dz;
+              const k = 1 + 0.2 * Math.min(mass, 2);
+              S.vx -= k * rel * dx;
+              S.vz -= k * rel * dz;
               S.vx *= 0.88;
               S.vz *= 0.88;
-              hit = Math.max(hit, -rel);
+              hit = Math.max(hit, -rel * Math.min(mass, 2));
             }
             if (n.racing) n.speed *= 0.7;
-            else n.stun = 1.6;
+            else n.stun = mass > 1 ? 0.8 : 1.6;
           }
         }
       }

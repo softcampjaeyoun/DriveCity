@@ -27,13 +27,15 @@ export interface CarSpec {
   };
   /** 기본 도색 */
   paint: string;
+  /** models.ts 의 MODELS 키. 등록돼 있으면 glb 로 그린다 */
+  model?: string;
 }
 
 export const CARS: readonly CarSpec[] = [
-  { id: 'city', name: '시티', cls: '경차', price: 0, tier: 1, base: { vmax: 44, accel: 13, grip: 8.5, yaw: 2.2 }, paint: '#f1f3f7' },
-  { id: 'sprinter', name: '스프린터', cls: '핫해치', price: 12000, tier: 1.6, base: { vmax: 54, accel: 17, grip: 9, yaw: 2.3 }, paint: '#3a7bff' },
-  { id: 'vista', name: '비스타 GT', cls: '스포츠', price: 38000, tier: 2.6, base: { vmax: 64, accel: 22, grip: 9.5, yaw: 2.4 }, paint: '#e8394a' },
-  { id: 'phantom', name: '팬텀', cls: '슈퍼카', price: 95000, tier: 4, base: { vmax: 76, accel: 28, grip: 10, yaw: 2.5 }, paint: '#1d1f26' },
+  { id: 'city', name: '시티', cls: '경차', price: 0, tier: 1, base: { vmax: 44, accel: 13, grip: 8.5, yaw: 2.2 }, paint: '#f1f3f7', model: 'car_city' },
+  { id: 'sprinter', name: '스프린터', cls: '핫해치', price: 12000, tier: 1.6, base: { vmax: 54, accel: 17, grip: 9, yaw: 2.3 }, paint: '#3a7bff', model: 'car_sprinter' },
+  { id: 'vista', name: '비스타 GT', cls: '스포츠', price: 38000, tier: 2.6, base: { vmax: 64, accel: 22, grip: 9.5, yaw: 2.4 }, paint: '#e8394a', model: 'car_vista' },
+  { id: 'phantom', name: '팬텀', cls: '슈퍼카', price: 95000, tier: 4, base: { vmax: 76, accel: 28, grip: 10, yaw: 2.5 }, paint: '#1d1f26', model: 'car_phantom' },
 ];
 
 export const carById = (id: string): CarSpec => CARS.find((c) => c.id === id) ?? CARS[0];

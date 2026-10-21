@@ -5,6 +5,7 @@ import { glowTexture } from '../render/textures.ts';
 import { clamp } from '../util/math.ts';
 import type { Box } from '../world/city.ts';
 import { snapToNode } from '../world/roads.ts';
+import { swapModel } from './models.ts';
 import type { CarStats } from './stats.ts';
 import { createSkids } from './skids.ts';
 
@@ -40,6 +41,8 @@ export interface Player {
   setPaint(hex: string): void;
   setGlow(hex: string): void;
   setFlash(v: number): void;
+  /** 등록된 glb 모델로 교체. 없으면 상자 모델로 돌아간다 */
+  setModel(id: string | undefined): void;
   reset(): void;
 }
 
@@ -53,8 +56,12 @@ export function createPlayer(scene: THREE.Scene): Player {
 
   // ----- 모델 -----
   const group = new THREE.Group();
+  // fallback 아래에 상자 모델 전부. 외부 모델이 오면 fallback 만 숨긴다
+  const fallback = new THREE.Group();
+  fallback.name = 'fallback';
+  group.add(fallback);
   const body = new THREE.Group();
-  group.add(body);
+  fallback.add(body);
   const paint = new THREE.MeshPhongMaterial({ color: 0xe8394a, shininess: 90, specular: 0x555555 });
   const dark = new THREE.MeshPhongMaterial({ color: 0x0c0e14, shininess: 120, specular: 0x8899bb });
   const lower = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.55, 4.3), paint);
@@ -99,7 +106,7 @@ export function createPlayer(scene: THREE.Scene): Player {
     const w = new THREE.Mesh(wheelGeo, wheelMat);
     w.add(new THREE.Mesh(rimGeo, rimMat));
     pivot.add(w);
-    group.add(pivot);
+    fallback.add(pivot);
     wheels.push(w);
     if (z > 0) frontPivots.push(pivot);
   }
@@ -265,6 +272,12 @@ export function createPlayer(scene: THREE.Scene): Player {
     },
     setFlash(v) {
       headLight.intensity = 2.4 + v * 6;
+    },
+    setModel(id) {
+      const prev = group.getObjectByName('model');
+      if (prev) group.remove(prev);
+      fallback.visible = true;
+      swapModel(group, fallback, id);
     },
     reset() {
       [S.x, S.z] = snapToNode(S.x, S.z);

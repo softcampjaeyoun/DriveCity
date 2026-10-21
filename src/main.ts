@@ -36,6 +36,7 @@ let flash = 0;
 let carSpec: CarSpec = CARS[0];
 let carStats: CarStats = computeStats(CARS[0], emptyParts());
 let carLv = 0;
+let lastModelCar = '';
 
 const run = createRun({
   toast: (b, s, secs) => hud.toast(b, s, secs),
@@ -53,6 +54,10 @@ const garage = createGarage(document.getElementById('garage') as HTMLElement, {
     carLv = partsLevel(car.parts);
     player.setPaint(car.paint);
     player.setGlow(car.glow);
+    if (spec.id !== lastModelCar) {
+      lastModelCar = spec.id;
+      player.setModel(spec.model);
+    }
   },
   onOpen: () => run.pause(),
   onClose: () => run.resume(),
@@ -87,6 +92,11 @@ function begin(): void {
   audio ??= createAudio();
   audio?.resume();
   run.start(player.S);
+}
+
+// 개발 모드 디버그 훅. 브라우저 콘솔이나 자동 테스트에서 상태를 들여다볼 때 쓴다
+if (import.meta.env.DEV) {
+  (window as unknown as { __dc: unknown }).__dc = { player, traffic, battle, run, garage, save };
 }
 
 // ----- 루프 -----

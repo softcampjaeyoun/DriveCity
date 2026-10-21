@@ -49,4 +49,11 @@ src/
   ui/                HUD, 미니맵, 차고
 ```
 
-밸런스는 `src/vehicle/stats.ts` (차량·부품), `src/ai/traffic.ts` (라이벌 속도·보상), `src/config.ts` (보상) 에서 조정해요.
+밸런스는 `src/vehicle/stats.ts` (차량·부품), `src/vehicle/kinds.ts` (교통 차종·대수), `src/ai/traffic.ts` (라이벌 속도·보상), `src/config.ts` (보상) 에서 조정해요.
+
+## 3D 모델
+
+교통 차량과 라이벌은 `public/models/` 의 외부 모델(glb/fbx)로 그리고, 파일이 없으면 상자 모델로 돌아가요. 모델을 추가·교체하는 방법은 `public/models/README.md` 를 보세요.
+
+- 승용차·택시·라이벌: [Kenney Car Kit](https://kenney.nl/assets/car-kit) (CC0)
+- 버스: [Free Low Poly Vehicles Pack by Rgsdev](https://opengameart.org/content/free-low-poly-vehicles-pack) (CC0)

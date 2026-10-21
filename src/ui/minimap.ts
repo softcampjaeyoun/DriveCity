@@ -35,9 +35,10 @@ export function createMinimap(canvas: HTMLCanvasElement, city: City): Minimap {
       g.drawImage(bg, 0, 0);
       for (const n of npcs) {
         const [nx, nz] = toMap(n.x, n.z);
-        g.fillStyle = n.rival ? n.rival.hex : 'rgba(200,206,220,0.55)';
+        const bus = n.kind.length > 6;
+        g.fillStyle = n.rival ? n.rival.hex : bus ? `#${n.kind.colors[0].toString(16).padStart(6, '0')}` : 'rgba(200,206,220,0.55)';
         g.beginPath();
-        g.arc(nx, nz, n.rival ? 5 : 2.5, 0, Math.PI * 2);
+        g.arc(nx, nz, n.rival ? 5 : bus ? 3.5 : 2.5, 0, Math.PI * 2);
         g.fill();
       }
       const [tx, tz] = toMap(target.x, target.z);
