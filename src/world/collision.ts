@@ -14,12 +14,16 @@ export interface PushResult {
   nz: number;
 }
 
-/** 건물·물 폴리곤 충돌. 공간 해시로 근처 폴리곤만 본다 */
+/** 가로등·신호등 기둥·나무 줄기(원) 또는 가드레일(선분) 같은 작은 장애물 */
+export type Obstacle = { x: number; z: number; r: number } | { x0: number; z0: number; x1: number; z1: number; r: number };
+
+/** 건물·물 폴리곤과 작은 장애물 충돌. 공간 해시로 근처 것만 본다 */
 export interface CollisionWorld {
-  /** 원이 건물에 겹치면 밀어낼 벡터와 법선. 없으면 null */
-  push(c: Circle): PushResult | null;
+  /** 원이 건물·장애물에 겹치면 밀어낼 벡터와 법선. 없으면 null. obstacles=false 면 건물만 (카메라용) */
+  push(c: Circle, obstacles?: boolean): PushResult | null;
   /** 물 위이고 다리 위가 아니면 true */
   inWater(x: number, z: number): boolean;
+  addObstacles(list: Obstacle[]): void;
 }
 
 interface Poly {
@@ -80,6 +84,23 @@ function nearestOnRing(ring: number[], x: number, z: number): { d: number; px: n
 
 export function createCollisionWorld(map: MapData, g: RoadGraph): CollisionWorld {
   const grid = new Map<string, Poly[]>();
+  const obsGrid = new Map<string, Obstacle[]>();
+  const addObs = (o: Obstacle) => {
+    const xs = 'x' in o ? [o.x] : [o.x0, o.x1];
+    const zs = 'z' in o ? [o.z] : [o.z0, o.z1];
+    const minX = Math.min(...xs) - o.r;
+    const maxX = Math.max(...xs) + o.r;
+    const minZ = Math.min(...zs) - o.r;
+    const maxZ = Math.max(...zs) + o.r;
+    for (let cx = Math.floor(minX / CELL); cx <= Math.floor(maxX / CELL); cx++) {
+      for (let cz = Math.floor(minZ / CELL); cz <= Math.floor(maxZ / CELL); cz++) {
+        const k = `${cx},${cz}`;
+        const list = obsGrid.get(k) ?? [];
+        list.push(o);
+        obsGrid.set(k, list);
+      }
+    }
+  };
   const add = (p: Poly) => {
     for (let cx = Math.floor(p.minX / CELL); cx <= Math.floor(p.maxX / CELL); cx++) {
       for (let cz = Math.floor(p.minZ / CELL); cz <= Math.floor(p.maxZ / CELL); cz++) {
@@ -91,6 +112,23 @@ export function createCollisionWorld(map: MapData, g: RoadGraph): CollisionWorld
     }
   };
   for (const b of map.buildings) add(makePoly(b.ring));
+  // 다리 난간은 선분 장애물로
+  for (const e of g.edges) {
+    if (!e.bridge) continue;
+    for (let i = 0; i < e.pts.length - 2; i += 2) {
+      const x0 = e.pts[i];
+      const z0 = e.pts[i + 1];
+      const x1 = e.pts[i + 2];
+      const z1 = e.pts[i + 3];
+      const l = Math.hypot(x1 - x0, z1 - z0) || 1;
+      const nx = -(z1 - z0) / l;
+      const nz = (x1 - x0) / l;
+      for (const side of [-1, 1]) {
+        const off = side * (e.half + 0.9);
+        addObs({ x0: x0 + nx * off, z0: z0 + nz * off, x1: x1 + nx * off, z1: z1 + nz * off, r: 0.25 });
+      }
+    }
+  }
   const water = map.water.map(makePoly);
   const bridges = g.edges.filter((e) => e.bridge);
 
@@ -105,8 +143,55 @@ export function createCollisionWorld(map: MapData, g: RoadGraph): CollisionWorld
     return out;
   };
 
+  function pushObstacle(c: Circle): PushResult | null {
+    const seen = new Set<Obstacle>();
+    for (let cx = Math.floor((c.x - c.r) / CELL); cx <= Math.floor((c.x + c.r) / CELL); cx++) {
+      for (let cz = Math.floor((c.z - c.r) / CELL); cz <= Math.floor((c.z + c.r) / CELL); cz++) {
+        for (const o of obsGrid.get(`${cx},${cz}`) ?? []) {
+          if (seen.has(o)) continue;
+          seen.add(o);
+          let px: number;
+          let pz: number;
+          if ('x' in o) {
+            px = o.x;
+            pz = o.z;
+          } else {
+            const dx = o.x1 - o.x0;
+            const dz = o.z1 - o.z0;
+            const l2 = dx * dx + dz * dz || 1;
+            const t = Math.min(1, Math.max(0, ((c.x - o.x0) * dx + (c.z - o.z0) * dz) / l2));
+            px = o.x0 + dx * t;
+            pz = o.z0 + dz * t;
+          }
+          let nx = c.x - px;
+          let nz = c.z - pz;
+          const d = Math.hypot(nx, nz);
+          const minD = c.r + o.r;
+          if (d >= minD) continue;
+          if (d < 1e-4) {
+            nx = 1;
+            nz = 0;
+          } else {
+            nx /= d;
+            nz /= d;
+          }
+          const depth = minD - d;
+          return { dx: nx * depth, dz: nz * depth, nx, nz };
+        }
+      }
+    }
+    return null;
+  }
+
   return {
-    push(c) {
+    addObstacles(list) {
+      for (const o of list) addObs(o);
+    },
+    push(c, obstacles = true) {
+      if (obstacles) {
+        const hit = pushObstacle(c);
+        if (hit) return hit;
+      }
       for (const p of candidates(c.x, c.z, c.r)) {
         if (c.x < p.minX - c.r || c.x > p.maxX + c.r || c.z < p.minZ - c.r || c.z > p.maxZ + c.r) continue;
         const near = nearestOnRing(p.ring, c.x, c.z);

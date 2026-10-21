@@ -9,6 +9,8 @@ export type Light = 'green' | 'yellow' | 'red';
  * 진입 방향을 평행한 두 묶음으로 나눠 번갈아 파란불.
  */
 export interface Signals {
+  /** 신호등 기둥 위치 (충돌용) */
+  poles: Array<[number, number]>;
   has(n: Node): boolean;
   /** 간선 e 를 dir 방향으로 달려 교차로 n 에 들어가는 차가 보는 신호 */
   state(n: Node, e: Edge, dir: Dir): Light;
@@ -80,6 +82,7 @@ export function createSignals(scene: THREE.Scene, g: RoadGraph): Signals {
   const BRIGHT: Record<Light, number> = { red: 0xff3b3b, yellow: 0xffc73b, green: 0x3bff8a };
   const DIM: Record<Light, number> = { red: 0x3a0e0e, yellow: 0x3a2e0e, green: 0x0e3a1e };
   const col = new THREE.Color();
+  const poles: Array<[number, number]> = [];
 
   heads.forEach((h, idx) => {
     const e = g.edges[h.edgeId];
@@ -93,6 +96,7 @@ export function createSignals(scene: THREE.Scene, g: RoadGraph): Signals {
     const pz = nz + p.hz * cross + rz * (e.half + 1.2);
     const yaw = Math.atan2(p.hx, p.hz);
     const armLen = Math.min(e.half + 0.5, 7);
+    poles.push([px, pz]);
     dummy.rotation.set(0, yaw, 0);
     dummy.scale.set(1, 1, 1);
     dummy.position.set(px, 2.8, pz);
@@ -129,6 +133,7 @@ export function createSignals(scene: THREE.Scene, g: RoadGraph): Signals {
   };
 
   return {
+    poles,
     has: (n) => offsets.has(n),
     state,
     update(t) {

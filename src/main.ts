@@ -46,12 +46,13 @@ const graph = buildGraph(map);
 const signals = createSignals(scene, graph);
 const city = buildCity(scene, map, graph, signals.has);
 const world = createCollisionWorld(map, graph);
+world.addObstacles(city.obstacles);
+world.addObstacles(signals.poles.map(([x, z]) => ({ x, z, r: 0.16 })));
 const player = createPlayer(scene, graph);
 const minimap = createMinimap(document.getElementById('minimap') as HTMLCanvasElement, map, graph);
 const bigmap = createBigMap(document.getElementById('bigmap') as HTMLElement, minimap, graph, (x, z) => placeName(graph, graph.nearestNode(x, z)));
 document.getElementById('mapwrap')!.addEventListener('click', () => bigmap.toggle());
-document.getElementById('bigmap')!.addEventListener('click', () => bigmap.toggle());
-const chase = createChaseCamera(camera, (x, z, r) => world.push({ x, z, r }));
+const chase = createChaseCamera(camera, (x, z, r) => world.push({ x, z, r }, false));
 const input = createInput();
 const marker = createMarker(scene, COLOR.run);
 const weather = createWeather(scene, city, (b, s) => hud.toast(b, s, 2.4));
@@ -203,7 +204,7 @@ function checkRedLight(): void {
 // debugCam 을 채우면 추적 카메라 대신 그 위치에서 본다 (항공 샷)
 const dbg = { debugCam: null as null | { x: number; y: number; z: number; lx: number; lz: number } };
 if (import.meta.env.DEV) {
-  (window as unknown as { __dc: unknown }).__dc = { player, traffic, battle, run, garage, save, graph, signals, wanted, missions, weather, map, dbg, scene, world, camera, daylight, chase };
+  (window as unknown as { __dc: unknown }).__dc = { player, traffic, battle, run, garage, save, graph, signals, wanted, missions, weather, map, dbg, scene, world, camera, daylight, chase, city };
 }
 
 // ----- 루프 -----

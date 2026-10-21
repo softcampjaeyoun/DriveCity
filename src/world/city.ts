@@ -4,10 +4,12 @@ import { aptTextures, billboardTexture, dongTexture, facadeSet, loadMerged, load
 import { glowTexture, windowTexture } from '../render/textures.ts';
 import type { Node, RoadGraph } from './graph.ts';
 import type { BuildingData, MapData } from './mapdata.ts';
-import { pointInRing } from './collision.ts';
+import { pointInRing, type Obstacle } from './collision.ts';
 import { rightOf } from './roads.ts';
 
 export interface City {
+  /** 가로등 기둥·가로수 줄기 등 부딪히는 작은 것들 */
+  obstacles: Obstacle[];
   /** 매 프레임 호출. 고층 빌딩 경고등 깜빡임, 물결 */
   update(t: number): void;
   /** 비가 올 때 노면을 젖은 느낌으로 */
@@ -155,6 +157,7 @@ function placeInstances(mesh: THREE.InstancedMesh, list: Placement[], dummy: THR
 export function buildCity(scene: THREE.Scene, map: MapData, g: RoadGraph, isSignal: (n: Node) => boolean): City {
   const rand = mulberry32(20261021);
   const dummy = new THREE.Object3D();
+  const obstacles: Obstacle[] = [];
   const { minX, maxX, minZ, maxZ } = g.bbox;
   const cx = (minX + maxX) / 2;
   const cz = (minZ + maxZ) / 2;
@@ -602,6 +605,7 @@ export function buildCity(scene: THREE.Scene, map: MapData, g: RoadGraph, isSign
       placed++;
     }
   }
+  for (const t of trees) obstacles.push({ x: t.x, z: t.z, r: 0.45 * t.s });
   void (async () => {
     const base = `${import.meta.env.BASE_URL}models/kenney-nature/`;
     const recolor = (m: THREE.MeshStandardMaterial) => {
@@ -652,6 +656,7 @@ export function buildCity(scene: THREE.Scene, map: MapData, g: RoadGraph, isSign
         }
       }
     }
+    for (const l of lamps) obstacles.push({ x: l.x, z: l.z, r: 0.18 });
     const poleMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.12, 0.16, 7.5, 6), new THREE.MeshLambertMaterial({ color: 0x4a4f5a }), lamps.length);
     poolMat = new THREE.MeshBasicMaterial({ map: glowTexture('rgba(255,170,80,0.42)'), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
     const poolMesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(17, 17).rotateX(-Math.PI / 2), poolMat, lamps.length);
@@ -699,6 +704,7 @@ export function buildCity(scene: THREE.Scene, map: MapData, g: RoadGraph, isSign
   applyLook();
 
   return {
+    obstacles,
     update(t) {
       beaconMat.color.setHex(Math.sin(t * 3) > 0 ? 0xff3040 : 0x330408);
       ripple.offset.set(t * 0.012, t * 0.008);

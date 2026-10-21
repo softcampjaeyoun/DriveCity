@@ -3,7 +3,7 @@ import type { RoadGraph } from '../world/graph.ts';
 import type { PlayerState } from '../vehicle/player.ts';
 import type { MapPoint, Minimap } from './minimap.ts';
 
-/** 미니맵을 누르거나 Tab 을 누르면 화면 가득 펼쳐지는 지도 */
+/** 미니맵을 누르거나 Tab 을 누르면 화면 가득 펼쳐지는 지도. 우클릭(또는 가운데 버튼) 드래그로 이동, 휠로 확대·축소, 더블클릭으로 원위치 */
 export interface BigMap {
   readonly open: boolean;
   toggle(): void;
@@ -19,19 +19,93 @@ export function createBigMap(root: HTMLElement, mini: Minimap, g: RoadGraph, pla
   let open = false;
   const bg = mini.background;
   const { minX, maxX, minZ, maxZ } = g.bbox;
+  // 보기 상태: 중심(월드 좌표)과 배율(화면 px / m)
+  let zoom = 1; // 전체가 들어오는 배율에 곱하는 값
+  let panX = 0;
+  let panZ = 0;
+  let dragging = false;
+  let dragMoved = false;
+  let lastX = 0;
+  let lastY = 0;
 
+  function fitScale(): number {
+    const w = root.clientWidth;
+    const h = root.clientHeight;
+    return Math.min((w - 40) / (maxX - minX), (h - 80) / (maxZ - minZ));
+  }
   function layout(): { scale: number; ox: number; oz: number } {
     const w = root.clientWidth;
     const h = root.clientHeight;
-    canvas.width = w;
-    canvas.height = h;
-    const spanX = maxX - minX;
-    const spanZ = maxZ - minZ;
-    const scale = Math.min((w - 40) / spanX, (h - 80) / spanZ);
-    return { scale, ox: (w - spanX * scale) / 2, oz: (h - spanZ * scale) / 2 + 10 };
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    const scale = fitScale() * zoom;
+    const cx = (minX + maxX) / 2 + panX;
+    const cz = (minZ + maxZ) / 2 + panZ;
+    return { scale, ox: w / 2 - (cx - minX) * scale, oz: h / 2 + 10 - (cz - minZ) * scale };
   }
 
-  return {
+  root.addEventListener('contextmenu', (e) => e.preventDefault());
+  root.addEventListener('pointerdown', (e) => {
+    if (e.button !== 2 && e.button !== 1) return;
+    dragging = true;
+    dragMoved = false;
+    lastX = e.clientX;
+    lastY = e.clientY;
+    root.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  root.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const scale = fitScale() * zoom;
+    panX -= (e.clientX - lastX) / scale;
+    panZ -= (e.clientY - lastY) / scale;
+    lastX = e.clientX;
+    lastY = e.clientY;
+    dragMoved = true;
+  });
+  const endDrag = (e: PointerEvent) => {
+    if (!dragging) return;
+    dragging = false;
+    if (root.hasPointerCapture(e.pointerId)) root.releasePointerCapture(e.pointerId);
+    // 우클릭 드래그는 click 이벤트가 안 오므로, 다음 틱에 플래그를 풀어 좌클릭 닫기가 막히지 않게
+    setTimeout(() => (dragMoved = false), 0);
+  };
+  root.addEventListener('pointerup', endDrag);
+  root.addEventListener('pointercancel', endDrag);
+  root.addEventListener(
+    'wheel',
+    (e) => {
+      e.preventDefault();
+      const { scale, ox, oz } = layout();
+      // 커서 아래 지점이 제자리에 있도록 확대
+      const wx = (e.clientX - ox) / scale + minX;
+      const wz = (e.clientY - oz) / scale + minZ;
+      const next = Math.min(8, Math.max(0.6, zoom * (e.deltaY < 0 ? 1.2 : 1 / 1.2)));
+      const k = next / zoom;
+      zoom = next;
+      const cx = (minX + maxX) / 2 + panX;
+      const cz = (minZ + maxZ) / 2 + panZ;
+      panX = wx - (wx - cx) / k - (minX + maxX) / 2;
+      panZ = wz - (wz - cz) / k - (minZ + maxZ) / 2;
+    },
+    { passive: false },
+  );
+  root.addEventListener('dblclick', () => {
+    zoom = 1;
+    panX = panZ = 0;
+  });
+  // 좌클릭은 닫기. 드래그 직후의 클릭은 무시
+  root.addEventListener('click', (e) => {
+    if (e.button !== 0 || dragMoved) {
+      dragMoved = false;
+      return;
+    }
+    api.toggle();
+  });
+
+  const api: BigMap = {
     get open() {
       return open;
     },
@@ -45,10 +119,11 @@ export function createBigMap(root: HTMLElement, mini: Minimap, g: RoadGraph, pla
       const toView = (x: number, z: number): [number, number] => [ox + (x - minX) * scale, oz + (z - minZ) * scale];
       ctx.fillStyle = '#0b0e16';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-      // 미니맵 배경에서 지도 영역만 잘라 전체를 맞춰 그린다
       const bgScale = mini.scale;
       const [sx, sz] = mini.toBg(minX, minZ);
-      ctx.drawImage(bg, sx, sz, (maxX - minX) * bgScale, (maxZ - minZ) * bgScale, ox, oz, (maxX - minX) * scale, (maxZ - minZ) * scale);
+      const [vx, vz] = toView(minX, minZ);
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(bg, sx, sz, (maxX - minX) * bgScale, (maxZ - minZ) * bgScale, vx, vz, (maxX - minX) * scale, (maxZ - minZ) * scale);
       const dot = (x: number, z: number, r: number, color: string) => {
         const [px, pz] = toView(x, z);
         ctx.fillStyle = color;
@@ -60,6 +135,7 @@ export function createBigMap(root: HTMLElement, mini: Minimap, g: RoadGraph, pla
       for (const n of npcs) {
         if (n.police?.chasing) dot(n.x, n.z, 5, Math.floor(t * 6) % 2 ? '#ff3a3a' : '#3a6bff');
         else if (n.rival) dot(n.x, n.z, 5, n.rival.hex);
+        else if (zoom >= 2.5) dot(n.x, n.z, 2, 'rgba(200,206,220,0.6)');
       }
       if (target) dot(target.x, target.z, 8 + Math.sin(t * 6) * 2, target.color);
       const [px, pz] = toView(S.x, S.z);
@@ -74,7 +150,6 @@ export function createBigMap(root: HTMLElement, mini: Minimap, g: RoadGraph, pla
       ctx.closePath();
       ctx.fill();
       ctx.restore();
-      // 지명 라벨
       ctx.font = '600 13px "IBM Plex Sans KR", sans-serif';
       ctx.fillStyle = 'rgba(233,237,246,0.85)';
       ctx.textAlign = 'center';
@@ -82,7 +157,22 @@ export function createBigMap(root: HTMLElement, mini: Minimap, g: RoadGraph, pla
         const [x, z] = toView(p.x, p.z);
         ctx.fillText(p.name, x, z);
       }
-      label.textContent = `${placeOf(S.x, S.z)} · 미니맵 클릭 또는 Tab 으로 닫기`;
+      // 확대 시 도로 이름
+      if (zoom >= 3) {
+        ctx.font = '11px "IBM Plex Sans KR", sans-serif';
+        ctx.fillStyle = 'rgba(200,206,220,0.75)';
+        const seen = new Set<string>();
+        for (const e of g.edges) {
+          if (!e.name || e.rank > 4 || seen.has(e.name)) continue;
+          const p = g.pointAt(e, 1, e.len / 2);
+          const [x, z] = toView(p.x, p.z);
+          if (x < 0 || z < 0 || x > canvas.width || z > canvas.height) continue;
+          seen.add(e.name);
+          ctx.fillText(e.name, x, z - 4);
+        }
+      }
+      label.textContent = `${placeOf(S.x, S.z)} · 우클릭 드래그 이동 · 휠 확대 · 더블클릭 원위치 · 좌클릭/Tab 닫기`;
     },
   };
+  return api;
 }
