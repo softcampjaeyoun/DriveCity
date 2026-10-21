@@ -386,6 +386,46 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
       for (const ring of bGrid.get(`${Math.floor(x / 40)},${Math.floor(z / 40)}`) ?? []) if (pointInRing(ring, x, z)) return true;
       return false;
     };
+    /** 점에서 가장 가까운 건물 벽: 벽 위 점, 바깥 법선, 벽 길이 */
+    const nearestWall = (x: number, z: number, maxD: number): { px: number; pz: number; nx: number; nz: number; len: number } | null => {
+      let best: { px: number; pz: number; nx: number; nz: number; len: number; d: number } | null = null;
+      const cx = Math.floor(x / 40);
+      const cz = Math.floor(z / 40);
+      const seen = new Set<number[]>();
+      for (let i = -1; i <= 1; i++) {
+        for (let j = -1; j <= 1; j++) {
+          for (const ring of bGrid.get(`${cx + i},${cz + j}`) ?? []) {
+            if (seen.has(ring)) continue;
+            seen.add(ring);
+            const [ccx, ccz] = ringCentroid(ring);
+            const n = ring.length / 2;
+            for (let k = 0; k < n; k++) {
+              const m = (k + 1) % n;
+              const x0 = ring[k * 2];
+              const z0 = ring[k * 2 + 1];
+              const dx = ring[m * 2] - x0;
+              const dz = ring[m * 2 + 1] - z0;
+              const l2 = dx * dx + dz * dz;
+              if (l2 < 2.25) continue;
+              const t = Math.min(1, Math.max(0, ((x - x0) * dx + (z - z0) * dz) / l2));
+              const px = x0 + dx * t;
+              const pz = z0 + dz * t;
+              const d = Math.hypot(x - px, z - pz);
+              if (d > maxD || (best && d >= best.d)) continue;
+              const l = Math.sqrt(l2);
+              let nx = dz / l;
+              let nz = -dx / l;
+              if (nx * (px - ccx) + nz * (pz - ccz) < 0) {
+                nx = -nx;
+                nz = -nz;
+              }
+              best = { px, pz, nx, nz, len: l, d };
+            }
+          }
+        }
+      }
+      return best;
+    };
 
     // ----- 도로, 인도, 다리 -----
     {
@@ -766,21 +806,32 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
           obstacles.push({ x, z, r: 0.1 });
           continue;
         }
-        if ((poi.kind !== 'shop' && poi.kind !== 'amenity' && poi.kind !== 'tourism') || !poi.name || count >= 160) continue;
-        // 가게 위치에서 가장 가까운 길을 향해 간판을 세운다 (상가 띠 위, 3m 높이)
-        const hit = g.nearestEdge(poi.x, poi.z, 45);
-        if (!hit) continue;
-        const p = g.pointAt(hit.e, 1, hit.s);
-        const side = hit.side >= 0 ? 1 : -1;
-        const [rx, rz] = rightOf(p.hx, p.hz);
-        // 도로 가장자리에서 건물 쪽으로 0.3m: 건물 벽 바로 앞
-        const edgeD = hit.e.half + (hit.e.rank <= 4 ? 4.5 : 2.2);
-        const dist = Math.max(edgeD + 0.3, Math.min(hit.d, edgeD + 6));
-        const x = p.x + rx * side * dist;
-        const z = p.z + rz * side * dist;
+        if ((poi.kind !== 'shop' && poi.kind !== 'amenity' && poi.kind !== 'tourism') || !poi.name || count >= 420) continue;
+        // 가게 위치에서 가장 가까운 건물 벽을 찾아 그 벽에 간판을 붙인다 (상가 띠 높이). 벽이 없으면 길가에 세운다
+        const wall = nearestWall(poi.x, poi.z, 12);
+        let x: number;
+        let z: number;
+        let yaw: number;
+        let w = 3.2;
+        if (wall) {
+          x = wall.px + wall.nx * 0.12;
+          z = wall.pz + wall.nz * 0.12;
+          yaw = Math.atan2(wall.nx, wall.nz);
+          w = Math.min(3.2, Math.max(1.6, wall.len - 0.4));
+        } else {
+          const hit = g.nearestEdge(poi.x, poi.z, 45);
+          if (!hit) continue;
+          const p = g.pointAt(hit.e, 1, hit.s);
+          const side = hit.side >= 0 ? 1 : -1;
+          const [rx, rz] = rightOf(p.hx, p.hz);
+          const edgeD = hit.e.half + (hit.e.rank <= 4 ? 4.5 : 2.2);
+          x = p.x + rx * side * (edgeD + 0.3);
+          z = p.z + rz * side * (edgeD + 0.3);
+          yaw = Math.atan2(-rx * side, -rz * side);
+        }
         const key = `${poi.name}|${SUB_KO[poi.sub] ?? ''}`;
         const list = byName.get(key) ?? [];
-        list.push({ x, y: 3.1, z, yaw: Math.atan2(p.hx, p.hz), w: 3.2, h: 0.8 });
+        list.push({ x, y: 3.15, z, yaw, w, h: w / 4 });
         byName.set(key, list);
         count++;
       }
