@@ -1,0 +1,277 @@
+import * as THREE from 'three';
+import { LIMIT, reduceMotion } from '../config.ts';
+import type { Input } from '../input.ts';
+import { glowTexture } from '../render/textures.ts';
+import { clamp } from '../util/math.ts';
+import type { Box } from '../world/city.ts';
+import { snapToNode } from '../world/roads.ts';
+import type { CarStats } from './stats.ts';
+import { createSkids } from './skids.ts';
+
+export interface PlayerState {
+  x: number;
+  z: number;
+  /** 진행 방향 (rad). sin → x, cos → z */
+  h: number;
+  vx: number;
+  vz: number;
+  steer: number;
+  nitro: number;
+  shake: number;
+  wheelSpin: number;
+}
+
+export interface StepResult {
+  /** 전방 속도 m/s */
+  vf: number;
+  /** 측면 속도 m/s. 클수록 미끄러지는 중 */
+  vl: number;
+  boosting: boolean;
+  drifting: boolean;
+}
+
+export interface Player {
+  S: PlayerState;
+  group: THREE.Group;
+  driftScore: number;
+  driftTimer: number;
+  step(dt: number, inp: Input, stats: CarStats, colliders: Box[], after: () => void): StepResult;
+  applyVisual(r: StepResult, inp: Input, dt: number): void;
+  setPaint(hex: string): void;
+  setGlow(hex: string): void;
+  setFlash(v: number): void;
+  reset(): void;
+}
+
+/** 차 중심에서 앞/뒤로 떨어진 충돌 원 2개 */
+export const PROBE: readonly number[] = [1.3, -1.3];
+export const RADIUS = 1.15;
+
+export function createPlayer(scene: THREE.Scene): Player {
+  const S: PlayerState = { x: 0, z: 0, h: 0, vx: 0, vz: 0, steer: 0, nitro: 0.6, shake: 0, wheelSpin: 0 };
+  const skids = createSkids(scene);
+
+  // ----- 모델 -----
+  const group = new THREE.Group();
+  const body = new THREE.Group();
+  group.add(body);
+  const paint = new THREE.MeshPhongMaterial({ color: 0xe8394a, shininess: 90, specular: 0x555555 });
+  const dark = new THREE.MeshPhongMaterial({ color: 0x0c0e14, shininess: 120, specular: 0x8899bb });
+  const lower = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.55, 4.3), paint);
+  lower.position.y = 0.68;
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.66, 0.48, 2.0), dark);
+  cabin.position.set(0, 1.18, -0.25);
+  const hood = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.12, 1.3), paint);
+  hood.position.set(0, 0.99, 1.35);
+  const spoiler = new THREE.Mesh(new THREE.BoxGeometry(1.95, 0.08, 0.42), dark);
+  spoiler.position.set(0, 1.32, -2.0);
+  const strutGeo = new THREE.BoxGeometry(0.08, 0.36, 0.12);
+  const s1 = new THREE.Mesh(strutGeo, dark);
+  s1.position.set(0.6, 1.12, -2.0);
+  const s2 = s1.clone();
+  s2.position.x = -0.6;
+  body.add(lower, cabin, hood, spoiler, s1, s2);
+
+  const headMat = new THREE.MeshBasicMaterial({ color: 0xfff6dc });
+  const tailMat = new THREE.MeshBasicMaterial({ color: 0x8a0f18 });
+  for (const sx of [-0.65, 0.65]) {
+    const h = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.14, 0.05), headMat);
+    h.position.set(sx, 0.78, 2.16);
+    const t = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.12, 0.05), tailMat);
+    t.position.set(sx, 0.82, -2.16);
+    body.add(h, t);
+  }
+
+  const wheelGeo = new THREE.CylinderGeometry(0.38, 0.38, 0.32, 18).rotateZ(Math.PI / 2);
+  const wheelMat = new THREE.MeshLambertMaterial({ color: 0x111216 });
+  const rimMat = new THREE.MeshLambertMaterial({ color: 0x9aa3b5 });
+  const rimGeo = new THREE.BoxGeometry(0.34, 0.5, 0.08);
+  const wheels: THREE.Mesh[] = [];
+  const frontPivots: THREE.Group[] = [];
+  for (const [x, z] of [
+    [-0.98, 1.35],
+    [0.98, 1.35],
+    [-0.98, -1.35],
+    [0.98, -1.35],
+  ]) {
+    const pivot = new THREE.Group();
+    pivot.position.set(x, 0.38, z);
+    const w = new THREE.Mesh(wheelGeo, wheelMat);
+    w.add(new THREE.Mesh(rimGeo, rimMat));
+    pivot.add(w);
+    group.add(pivot);
+    wheels.push(w);
+    if (z > 0) frontPivots.push(pivot);
+  }
+
+  const glowMat = new THREE.MeshBasicMaterial({
+    map: glowTexture('rgba(255,255,255,0.7)'),
+    color: 0x4fd1ff,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const glow = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 6).rotateX(-Math.PI / 2), glowMat);
+  glow.position.y = 0.04;
+  group.add(glow);
+  const underLight = new THREE.PointLight(0x4fd1ff, 1.3, 9);
+  underLight.position.set(0, 0.4, 0);
+  group.add(underLight);
+  const headLight = new THREE.SpotLight(0xfff1d0, 2.4, 75, 0.48, 0.6, 1);
+  headLight.position.set(0, 0.85, 2.0);
+  headLight.target.position.set(0, 0, 22);
+  group.add(headLight, headLight.target);
+  scene.add(group);
+
+  // ----- 충돌 (빌딩, 나무, 맵 경계) -----
+  function collide(colliders: Box[]): void {
+    const fx = Math.sin(S.h);
+    const fz = Math.cos(S.h);
+    let hit = 0;
+    for (const off of PROBE) {
+      for (const b of colliders) {
+        const px = S.x + fx * off;
+        const pz = S.z + fz * off;
+        if (px < b.minX - RADIUS || px > b.maxX + RADIUS || pz < b.minZ - RADIUS || pz > b.maxZ + RADIUS) continue;
+        const cx = clamp(px, b.minX, b.maxX);
+        const cz = clamp(pz, b.minZ, b.maxZ);
+        let dx = px - cx;
+        let dz = pz - cz;
+        const d = Math.hypot(dx, dz);
+        if (d >= RADIUS) continue;
+        if (d < 1e-4) {
+          // 상자 안에 들어간 경우: 가장 가까운 면으로 밀어낸다
+          const pen = [
+            [px - b.minX, -1, 0],
+            [b.maxX - px, 1, 0],
+            [pz - b.minZ, 0, -1],
+            [b.maxZ - pz, 0, 1],
+          ].sort((a, c) => a[0] - c[0])[0];
+          dx = pen[1];
+          dz = pen[2];
+          S.x += dx * (pen[0] + RADIUS);
+          S.z += dz * (pen[0] + RADIUS);
+        } else {
+          const push = RADIUS - d;
+          dx /= d;
+          dz /= d;
+          S.x += dx * push;
+          S.z += dz * push;
+        }
+        const vn = S.vx * dx + S.vz * dz;
+        if (vn < 0) {
+          S.vx -= 1.25 * vn * dx;
+          S.vz -= 1.25 * vn * dz;
+          S.vx *= 0.82;
+          S.vz *= 0.82;
+          hit = Math.max(hit, -vn);
+        }
+      }
+    }
+    for (const axis of ['x', 'z'] as const) {
+      const v = axis === 'x' ? 'vx' : 'vz';
+      if (Math.abs(S[axis]) > LIMIT) {
+        hit = Math.max(hit, Math.abs(S[v]));
+        S[axis] = Math.sign(S[axis]) * LIMIT;
+        S[v] *= -0.3;
+      }
+    }
+    if (hit > 3 && !reduceMotion) S.shake = Math.min(1, S.shake + hit / 25);
+  }
+
+  let lastDrift = false;
+  const player: Player = {
+    S,
+    group,
+    driftScore: 0,
+    driftTimer: 0,
+
+    step(dt, inp, st, colliders, after) {
+      const fx = Math.sin(S.h);
+      const fz = Math.cos(S.h);
+      const lx = Math.cos(S.h);
+      const lz = -Math.sin(S.h);
+      let vf = S.vx * fx + S.vz * fz;
+      let vl = S.vx * lx + S.vz * lz;
+
+      const boosting = inp.nitro && S.nitro > 0.01 && inp.up;
+      const vmax = boosting ? st.nitroVmax : st.vmax;
+      if (boosting) S.nitro = Math.max(0, S.nitro - dt * st.nitroDrain);
+
+      if (inp.up) {
+        if (vf < 0) vf += st.brake * dt;
+        else vf += (st.accel + (boosting ? st.nitroAccel : 0)) * Math.max(0, 1 - (vf / vmax) ** 2) * dt;
+      }
+      if (inp.down) {
+        if (vf > 0.5) vf -= st.brake * dt;
+        else vf = Math.max(-st.revMax, vf - st.accel * 0.6 * dt);
+      }
+      if (!inp.up && !inp.down) vf -= Math.sign(vf) * Math.min(Math.abs(vf), 3.2 * dt);
+      vf -= vf * 0.07 * dt;
+      if (vf > vmax) vf -= (vf - vmax) * 1.5 * dt;
+      if (inp.hb) vf -= Math.sign(vf) * Math.min(Math.abs(vf), 5 * dt);
+      vf -= Math.sign(vf) * Math.min(Math.abs(vf), Math.abs(vl) * 0.22 * dt);
+
+      const grip = inp.hb ? st.hbGrip : Math.abs(vl) > 4 ? st.grip * 0.45 : st.grip;
+      vl *= Math.exp(-grip * dt);
+
+      const steerIn = (inp.left ? 1 : 0) - (inp.right ? 1 : 0);
+      S.steer += (steerIn - S.steer) * Math.min(1, dt * (steerIn ? 6 : 9));
+      const low = clamp(Math.abs(vf) / 6, 0, 1);
+      const high = 1 - 0.5 * Math.min(Math.abs(vf) / st.vmax, 1);
+      const yaw = S.steer * st.maxYaw * low * high * Math.sign(vf || 1) * (inp.hb ? 1.4 : 1);
+      S.h += yaw * dt;
+
+      S.vx = fx * vf + lx * vl;
+      S.vz = fz * vf + lz * vl;
+      S.x += S.vx * dt;
+      S.z += S.vz * dt;
+      collide(colliders);
+      after();
+
+      const drifting = Math.abs(vl) > 3.2 && Math.abs(vf) > 8;
+      if (drifting) {
+        S.nitro = Math.min(1, S.nitro + dt * st.nitroGain);
+        player.driftScore += Math.abs(vl) * dt * 10;
+        player.driftTimer = 0.6;
+        for (const side of [-0.95, 0.95]) skids.add(S.x - fx * 1.35 + lx * side, S.z - fz * 1.35 + lz * side, S.h);
+      } else {
+        S.nitro = Math.min(1, S.nitro + dt * 0.02);
+        player.driftTimer -= dt;
+        if (player.driftTimer <= 0 && !lastDrift) player.driftScore = 0;
+      }
+      lastDrift = drifting;
+      return { vf, vl, boosting, drifting };
+    },
+
+    applyVisual(r, inp, dt) {
+      group.position.set(S.x, 0, S.z);
+      group.rotation.y = S.h;
+      body.rotation.z = clamp(-r.vl * 0.012, -0.08, 0.08);
+      body.rotation.x = clamp((inp.down ? 0.03 : 0) - (inp.up ? 0.02 : 0), -0.05, 0.05);
+      S.wheelSpin += (r.vf * dt) / 0.38;
+      for (const w of wheels) w.rotation.x = S.wheelSpin;
+      for (const p of frontPivots) p.rotation.y = S.steer * 0.5;
+      tailMat.color.setHex(inp.down || inp.hb ? 0xff2436 : 0x8a0f18);
+      glowMat.opacity = r.boosting ? 1 : 0.75;
+    },
+
+    setPaint(hex) {
+      paint.color.set(hex);
+    },
+    setGlow(hex) {
+      glowMat.color.set(hex);
+      underLight.color.set(hex);
+    },
+    setFlash(v) {
+      headLight.intensity = 2.4 + v * 6;
+    },
+    reset() {
+      [S.x, S.z] = snapToNode(S.x, S.z);
+      S.h = Math.round(S.h / (Math.PI / 2)) * (Math.PI / 2);
+      S.vx = S.vz = 0;
+      S.steer = 0;
+    },
+  };
+  return player;
+}
