@@ -581,7 +581,10 @@ export function buildCity(scene: THREE.Scene, map: MapData, g: RoadGraph, isSign
       for (const side of [1, -1]) {
         const x = p.x + rx * side * (e.half + 2.6);
         const z = p.z + rz * side * (e.half + 2.6);
-        if (inBuilding(x, z) || g.nearestEdge(x, z, 2.2)) continue;
+        if (inBuilding(x, z)) continue;
+        // 상·하행이 따로 그려진 대로는 옆 차로 위에 심길 수 있어, 가장 가까운 길의 노면 밖인지 확인한다
+        const near = g.nearestEdge(x, z, 14);
+        if (near && near.d < near.e.half + 1.2) continue;
         trees.push({ x, z, s: 0.85 + rand() * 0.3, park: false });
       }
     }
