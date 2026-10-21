@@ -163,6 +163,27 @@ kbd {
 }
 #bigmap canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
 #bigmap { user-select: none; touch-action: none; }
+#bigmap .bigmap-zoom {
+  position: absolute;
+  right: calc(18px + env(safe-area-inset-right, 0px));
+  top: calc(18px + env(safe-area-inset-top, 0px));
+  display: grid;
+  gap: 6px;
+}
+#bigmap .bigmap-zoom button {
+  min-width: 44px;
+  height: 40px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 18px;
+  font-weight: 600;
+  cursor: pointer;
+}
+#bigmap .bigmap-zoom button:hover { background: rgba(79, 209, 255, 0.18); }
 #bigmap .bigmap-label {
   position: absolute;
   left: 50%;

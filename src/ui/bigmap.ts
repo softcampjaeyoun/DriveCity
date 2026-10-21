@@ -14,24 +14,53 @@ export function createBigMap(root: HTMLElement, mini: Minimap, g: RoadGraph, pla
   const canvas = document.createElement('canvas');
   const label = document.createElement('div');
   label.className = 'bigmap-label';
-  root.append(canvas, label);
+  const zoomBox = document.createElement('div');
+  zoomBox.className = 'bigmap-zoom';
+  const btnIn = document.createElement('button');
+  btnIn.textContent = '+';
+  btnIn.title = '확대';
+  const btnOut = document.createElement('button');
+  btnOut.textContent = '−';
+  btnOut.title = '축소';
+  const btnFit = document.createElement('button');
+  btnFit.textContent = '전체';
+  btnFit.title = '전체 보기';
+  const btnMe = document.createElement('button');
+  btnMe.textContent = '내 위치';
+  zoomBox.append(btnIn, btnOut, btnFit, btnMe);
+  root.append(canvas, zoomBox, label);
   const ctx = canvas.getContext('2d')!;
   let open = false;
   const bg = mini.background;
   const { minX, maxX, minZ, maxZ } = g.bbox;
   // 보기 상태: 중심(월드 좌표)과 배율(화면 px / m)
-  let zoom = 1; // 전체가 들어오는 배율에 곱하는 값
+  const OPEN_ZOOM = 2.5;
+  const MAX_ZOOM = 10;
+  let zoom = OPEN_ZOOM; // 전체가 들어오는 배율에 곱하는 값. 1 = 전체 보기
   let panX = 0;
   let panZ = 0;
   let dragging = false;
   let dragMoved = false;
   let lastX = 0;
   let lastY = 0;
+  let playerX = (minX + maxX) / 2;
+  let playerZ = (minZ + maxZ) / 2;
 
   function fitScale(): number {
     const w = root.clientWidth;
     const h = root.clientHeight;
-    return Math.min((w - 40) / (maxX - minX), (h - 80) / (maxZ - minZ));
+    return Math.min((w - 32) / (maxX - minX), (h - 70) / (maxZ - minZ));
+  }
+  /** 플레이어를 가운데에 두고 zoom 배율로 */
+  function centerOnPlayer(z: number): void {
+    zoom = z;
+    panX = playerX - (minX + maxX) / 2;
+    panZ = playerZ - (minZ + maxZ) / 2;
+  }
+  /** 화면 중앙 기준으로 배율 변경 */
+  function zoomBy(k: number): void {
+    zoom = Math.min(MAX_ZOOM, Math.max(1, zoom * k));
+    if (zoom === 1) panX = panZ = 0;
   }
   function layout(): { scale: number; ox: number; oz: number } {
     const w = root.clientWidth;
@@ -82,19 +111,39 @@ export function createBigMap(root: HTMLElement, mini: Minimap, g: RoadGraph, pla
       // 커서 아래 지점이 제자리에 있도록 확대
       const wx = (e.clientX - ox) / scale + minX;
       const wz = (e.clientY - oz) / scale + minZ;
-      const next = Math.min(8, Math.max(0.6, zoom * (e.deltaY < 0 ? 1.2 : 1 / 1.2)));
+      const next = Math.min(MAX_ZOOM, Math.max(1, zoom * (e.deltaY < 0 ? 1.25 : 1 / 1.25)));
       const k = next / zoom;
       zoom = next;
       const cx = (minX + maxX) / 2 + panX;
       const cz = (minZ + maxZ) / 2 + panZ;
       panX = wx - (wx - cx) / k - (minX + maxX) / 2;
       panZ = wz - (wz - cz) / k - (minZ + maxZ) / 2;
+      if (zoom === 1) panX = panZ = 0;
     },
     { passive: false },
   );
-  root.addEventListener('dblclick', () => {
+  root.addEventListener('dblclick', () => centerOnPlayer(OPEN_ZOOM));
+  const stop = (e: Event) => e.stopPropagation();
+  for (const b of [btnIn, btnOut, btnFit, btnMe]) {
+    b.addEventListener('pointerdown', stop);
+    b.addEventListener('dblclick', stop);
+  }
+  btnIn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    zoomBy(1.5);
+  });
+  btnOut.addEventListener('click', (e) => {
+    e.stopPropagation();
+    zoomBy(1 / 1.5);
+  });
+  btnFit.addEventListener('click', (e) => {
+    e.stopPropagation();
     zoom = 1;
     panX = panZ = 0;
+  });
+  btnMe.addEventListener('click', (e) => {
+    e.stopPropagation();
+    centerOnPlayer(Math.max(zoom, OPEN_ZOOM));
   });
   // 좌클릭은 닫기. 드래그 직후의 클릭은 무시
   root.addEventListener('click', (e) => {
@@ -112,8 +161,11 @@ export function createBigMap(root: HTMLElement, mini: Minimap, g: RoadGraph, pla
     toggle() {
       open = !open;
       root.hidden = !open;
+      if (open) centerOnPlayer(OPEN_ZOOM);
     },
     draw(t, S, npcs, target, extra) {
+      playerX = S.x;
+      playerZ = S.z;
       if (!open) return;
       const { scale, ox, oz } = layout();
       const toView = (x: number, z: number): [number, number] => [ox + (x - minX) * scale, oz + (z - minZ) * scale];
@@ -171,7 +223,7 @@ export function createBigMap(root: HTMLElement, mini: Minimap, g: RoadGraph, pla
           ctx.fillText(e.name, x, z - 4);
         }
       }
-      label.textContent = `${placeOf(S.x, S.z)} · 우클릭 드래그 이동 · 휠 확대 · 더블클릭 원위치 · 좌클릭/Tab 닫기`;
+      label.textContent = `${placeOf(S.x, S.z)} · ${zoom.toFixed(1)}배 · 우클릭 드래그 이동 · 휠 또는 + − 확대 · 좌클릭/Tab 닫기`;
     },
   };
   return api;
