@@ -1,10 +1,10 @@
 import * as THREE from 'three';
-import { LIMIT, reduceMotion } from '../config.ts';
+import { reduceMotion } from '../config.ts';
 import type { Input } from '../input.ts';
 import { glowTexture } from '../render/textures.ts';
 import { clamp } from '../util/math.ts';
 import type { Box } from '../world/city.ts';
-import { snapToNode } from '../world/roads.ts';
+import type { RoadGraph } from '../world/graph.ts';
 import { swapModel } from './models.ts';
 import type { CarStats } from './stats.ts';
 import { createSkids } from './skids.ts';
@@ -43,15 +43,21 @@ export interface Player {
   setFlash(v: number): void;
   /** 등록된 glb 모델로 교체. 없으면 상자 모델로 돌아간다 */
   setModel(id: string | undefined): void;
+  /** 가장 가까운 교차로로 되돌린다 */
   reset(): void;
+  /** 이번 프레임에 강에 빠졌는지 */
+  fell: boolean;
+  /** 이번 프레임 빌딩·경계 충돌 세기 (m/s). 0 이면 없음 */
+  crash: number;
 }
 
 /** 차 중심에서 앞/뒤로 떨어진 충돌 원 2개 */
 export const PROBE: readonly number[] = [1.3, -1.3];
 export const RADIUS = 1.15;
 
-export function createPlayer(scene: THREE.Scene): Player {
+export function createPlayer(scene: THREE.Scene, g: RoadGraph): Player {
   const S: PlayerState = { x: 0, z: 0, h: 0, vx: 0, vz: 0, steer: 0, nitro: 0.6, shake: 0, wheelSpin: 0 };
+  const bounds = { minX: g.minX + 1.3, maxX: g.maxX - 1.3, minZ: g.minZ + 1.3, maxZ: g.maxZ - 1.3 };
   const skids = createSkids(scene);
 
   // ----- 모델 -----
@@ -140,6 +146,10 @@ export function createPlayer(scene: THREE.Scene): Player {
         const px = S.x + fx * off;
         const pz = S.z + fz * off;
         if (px < b.minX - RADIUS || px > b.maxX + RADIUS || pz < b.minZ - RADIUS || pz > b.maxZ + RADIUS) continue;
+        if (b.water) {
+          if (px > b.minX && px < b.maxX && pz > b.minZ && pz < b.maxZ) player.fell = true;
+          continue;
+        }
         const cx = clamp(px, b.minX, b.maxX);
         const cz = clamp(pz, b.minZ, b.maxZ);
         let dx = px - cx;
@@ -177,12 +187,15 @@ export function createPlayer(scene: THREE.Scene): Player {
     }
     for (const axis of ['x', 'z'] as const) {
       const v = axis === 'x' ? 'vx' : 'vz';
-      if (Math.abs(S[axis]) > LIMIT) {
+      const lo = axis === 'x' ? bounds.minX : bounds.minZ;
+      const hi = axis === 'x' ? bounds.maxX : bounds.maxZ;
+      if (S[axis] < lo || S[axis] > hi) {
         hit = Math.max(hit, Math.abs(S[v]));
-        S[axis] = Math.sign(S[axis]) * LIMIT;
+        S[axis] = clamp(S[axis], lo, hi);
         S[v] *= -0.3;
       }
     }
+    player.crash = hit;
     if (hit > 3 && !reduceMotion) S.shake = Math.min(1, S.shake + hit / 25);
   }
 
@@ -192,8 +205,11 @@ export function createPlayer(scene: THREE.Scene): Player {
     group,
     driftScore: 0,
     driftTimer: 0,
+    fell: false,
+    crash: 0,
 
     step(dt, inp, st, colliders, after) {
+      player.fell = false;
       const fx = Math.sin(S.h);
       const fz = Math.cos(S.h);
       const lx = Math.cos(S.h);
@@ -280,7 +296,7 @@ export function createPlayer(scene: THREE.Scene): Player {
       swapModel(group, fallback, id);
     },
     reset() {
-      [S.x, S.z] = snapToNode(S.x, S.z);
+      [S.x, S.z] = g.pos(g.nearest(S.x, S.z));
       S.h = Math.round(S.h / (Math.PI / 2)) * (Math.PI / 2);
       S.vx = S.vz = 0;
       S.steer = 0;

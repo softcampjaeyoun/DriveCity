@@ -1,4 +1,5 @@
 import { CHECKPOINTS } from '../config.ts';
+import { MAX_STARS } from '../game/wanted.ts';
 import { fmtTime } from '../util/math.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => {
@@ -11,6 +12,7 @@ export interface HudFrame {
   time: number;
   cp: number;
   credits: number;
+  level: { lv: number; xp: number; next: number };
   kmh: number;
   reverse: boolean;
   /** 0..1 현재 기어 안에서의 회전수 비율 */
@@ -20,12 +22,17 @@ export interface HudFrame {
   dist: number;
   /** 차 기준 목표 방향 (rad) */
   angle: number;
+  navLabel: string;
+  navColor: string;
   battle: { name: string; pd: number; rd: number } | null;
+  wanted: { stars: number; bust: number; escape: number } | null;
+  mission: { title: string; objective: string; time: number; sat: number | null } | null;
   promptName: string | null;
   garageHint: boolean;
   drift: number | null;
   carName: string;
   carLv: number;
+  status: string;
 }
 
 export interface Hud {
@@ -41,6 +48,8 @@ export function createHud(): Hud {
     cp: $('cp'),
     best: $('best'),
     credits: $('credits'),
+    level: $('level'),
+    xpBar: $('xpBar').firstElementChild as HTMLElement,
     navLabel: $('navLabel'),
     arrow: $('arrow'),
     arrowPath: $('arrowPath'),
@@ -49,9 +58,19 @@ export function createHud(): Hud {
     bName: $('bName'),
     bPlayer: $('bPlayer'),
     bRival: $('bRival'),
+    wanted: $('wanted'),
+    stars: $('stars'),
+    wantedSub: $('wantedSub'),
+    wantedBar: $('wantedBar').firstElementChild as HTMLElement,
+    mission: $('mission'),
+    mTitle: $('mTitle'),
+    mObjective: $('mObjective'),
+    mTime: $('mTime'),
+    mSat: $('mSat'),
     prompt: $('prompt'),
     promptName: $('promptName'),
     garageHint: $('garageHint'),
+    status: $('status'),
     speed: $('speed'),
     gear: $('gear'),
     rpm: $('rpm').firstElementChild as HTMLElement,
@@ -71,22 +90,50 @@ export function createHud(): Hud {
       el.time.textContent = fmtTime(f.time);
       el.cp.textContent = `${f.cp} / ${CHECKPOINTS}`;
       el.credits.textContent = f.credits.toLocaleString('ko-KR');
+      el.level.textContent = `Lv ${f.level.lv}`;
+      el.xpBar.style.width = `${(f.level.xp / f.level.next) * 100}%`;
 
-      const inBattle = !!f.battle;
       el.arrow.style.transform = `rotate(${f.angle}rad)`;
-      el.arrowPath.setAttribute('fill', inBattle ? '#ffae4a' : '#4fd1ff');
-      el.navLabel.textContent = inBattle ? '결승 지점' : '다음 지점';
+      el.arrowPath.setAttribute('fill', f.navColor);
+      el.dist.style.color = f.navColor;
+      el.navLabel.textContent = f.navLabel;
       el.dist.textContent = `${Math.round(f.dist)} m`;
 
-      el.battle.classList.toggle('on', inBattle);
+      el.battle.classList.toggle('on', !!f.battle);
       if (f.battle) {
         el.bName.textContent = `VS ${f.battle.name}`;
         el.bPlayer.textContent = `${Math.round(f.battle.pd)} m`;
         el.bRival.textContent = `${Math.round(f.battle.rd)} m`;
       }
+
+      el.wanted.classList.toggle('on', !!f.wanted);
+      if (f.wanted) {
+        el.stars.textContent = '★'.repeat(f.wanted.stars) + '☆'.repeat(MAX_STARS - f.wanted.stars);
+        if (f.wanted.bust > 0.05) {
+          el.wantedSub.textContent = '검거 중…';
+          el.wantedBar.style.width = `${f.wanted.bust * 100}%`;
+          el.wantedBar.style.background = 'var(--warn)';
+        } else {
+          el.wantedSub.textContent = f.wanted.escape > 0.05 ? '따돌리는 중' : '경찰 추격';
+          el.wantedBar.style.width = `${f.wanted.escape * 100}%`;
+          el.wantedBar.style.background = 'var(--ok)';
+        }
+      }
+
+      el.mission.classList.toggle('on', !!f.mission);
+      if (f.mission) {
+        el.mTitle.textContent = f.mission.title;
+        el.mObjective.textContent = f.mission.objective;
+        el.mTime.textContent = `${Math.max(0, Math.ceil(f.mission.time))}초`;
+        el.mTime.classList.toggle('low', f.mission.time < 10);
+        el.mSat.hidden = f.mission.sat === null;
+        if (f.mission.sat !== null) el.mSat.textContent = `만족도 ${Math.round(f.mission.sat)}%`;
+      }
+
       el.prompt.classList.toggle('on', !!f.promptName);
       if (f.promptName) el.promptName.textContent = f.promptName;
       el.garageHint.classList.toggle('on', f.garageHint && !f.promptName);
+      el.status.textContent = f.status;
 
       el.speed.textContent = String(Math.round(f.kmh));
       el.gear.textContent = f.reverse ? 'R' : String(f.gear + 1);

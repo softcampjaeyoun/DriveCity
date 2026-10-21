@@ -2,50 +2,80 @@ import './style.css';
 import { createTraffic } from './ai/traffic.ts';
 import { createAudio, type EngineAudio } from './audio.ts';
 import { createChaseCamera } from './camera.ts';
-import { coarse } from './config.ts';
+import { EDGE, coarse } from './config.ts';
 import { createBattle } from './game/battle.ts';
+import { createMissions } from './game/missions.ts';
 import { createRun } from './game/run.ts';
-import { save } from './game/save.ts';
+import { addCredits, addXp, levelInfo, persist, save } from './game/save.ts';
+import { CHASE_PACE, createWanted } from './game/wanted.ts';
 import { IDLE, createInput } from './input.ts';
+import { createRadio, type Radio } from './radio.ts';
 import { createStage } from './render/scene.ts';
+import { createWeather } from './render/weather.ts';
 import { createGarage } from './ui/garage.ts';
 import { createHud } from './ui/hud.ts';
-import { createMinimap } from './ui/minimap.ts';
+import { createMinimap, type MapPoint } from './ui/minimap.ts';
 import { createPlayer } from './vehicle/player.ts';
 import { CARS, computeStats, emptyParts, partsLevel, type CarSpec, type CarStats } from './vehicle/stats.ts';
-import { createMarker } from './world/checkpoint.ts';
 import { buildCity } from './world/city.ts';
+import { buildGraph } from './world/graph.ts';
+import { createMarker } from './world/markers.ts';
+import { createSignals } from './world/signals.ts';
 
 if (coarse) document.documentElement.classList.add('coarse');
 
+const COLOR = { run: 0x4fd1ff, battle: 0xffae4a, mission: 0x5ce09a };
+const hex = (n: number) => `#${n.toString(16).padStart(6, '0')}`;
+
 const canvas = document.getElementById('view') as HTMLCanvasElement;
-const { renderer, scene, camera } = createStage(canvas);
-const city = buildCity(scene);
-const marker = createMarker(scene);
-const player = createPlayer(scene);
-const traffic = createTraffic(scene);
+const stage = createStage(canvas);
+const { scene, camera } = stage;
+const graph = buildGraph();
+const city = buildCity(scene, graph);
+const signals = createSignals(scene, graph);
+const player = createPlayer(scene, graph);
 const hud = createHud();
-const minimap = createMinimap(document.getElementById('minimap') as HTMLCanvasElement, city);
+const minimap = createMinimap(document.getElementById('minimap') as HTMLCanvasElement, graph);
 const chase = createChaseCamera(camera);
 const input = createInput();
+const marker = createMarker(scene, COLOR.run);
+const weather = createWeather(scene, city, (b, s) => hud.toast(b, s, 2.4));
+stage.setBloom(save.settings.fx);
 
 let started = false;
 let audio: EngineAudio | null = null;
+let radio: Radio | null = null;
 let flash = 0;
-// 차고가 onChange 로 바로 덮어쓴다
 let carSpec: CarSpec = CARS[0];
 let carStats: CarStats = computeStats(CARS[0], emptyParts());
 let carLv = 0;
 let lastModelCar = '';
+let lastHit = 0;
 
-const run = createRun({
-  toast: (b, s, secs) => hud.toast(b, s, secs),
-  onBest: (t) => hud.setBest(t),
+const toast = (b: string, s: string, secs?: number) => hud.toast(b, s, secs);
+const run = createRun(graph, { toast, onBest: (t) => hud.setBest(t) });
+const wanted = createWanted({
+  toast,
+  onBusted: (fine) => addCredits(-fine),
+  onEscaped: (stars) => {
+    addCredits(stars * 200);
+    addXp(40 * stars);
+  },
 });
-const battle = createBattle(traffic, {
-  toast: (b, s, secs) => hud.toast(b, s, secs),
-  pauseRun: () => run.pause(),
-  resumeRun: () => run.resume(),
+const traffic = createTraffic(scene, graph, signals, {
+  onHit(n, impact) {
+    lastHit = impact;
+    // 내가 속도를 내고 들이받았을 때만 위반. 경찰이 나를 박은 건 세지 않는다
+    if (impact < 4 || n.racing || Math.hypot(player.S.vx, player.S.vz) < 7) return;
+    wanted.add(n.kind.id === 'police' ? 'hit_police' : 'hit_traffic');
+  },
+});
+const battle = createBattle(graph, traffic, { toast, pauseRun: () => run.pause(), resumeRun: () => run.resume() });
+const missions = createMissions(graph, { toast, onStart: () => run.pause(), onEnd: () => run.resume() });
+const spotMarkers = missions.spots.map((sp) => {
+  const m = createMarker(scene, COLOR.mission, 2.5);
+  m.setPosition(sp.x, sp.z);
+  return m;
 });
 const garage = createGarage(document.getElementById('garage') as HTMLElement, {
   onChange(spec, stats, car) {
@@ -65,14 +95,17 @@ const garage = createGarage(document.getElementById('garage') as HTMLElement, {
 hud.setBest(save.best);
 
 // ----- 입력 액션 -----
-const canOpenGarage = () => started && !battle.active && Math.hypot(player.S.vx, player.S.vz) < 1.5;
+const canOpenGarage = () => started && !battle.active && !missions.active && wanted.stars === 0 && Math.hypot(player.S.vx, player.S.vz) < 1.5;
 input.on('reset', () => {
   if (!garage.open) player.reset();
 });
 input.on('camera', () => chase.cycle());
-input.on('mute', () => audio?.toggleMute());
+input.on('mute', () => {
+  const m = audio?.toggleMute();
+  if (m !== undefined) toast(m ? '소리 끔' : '소리 켬', '', 1);
+});
 input.on('battle', () => {
-  if (!started || garage.open) return;
+  if (!started || garage.open || missions.active) return;
   flash = 1;
   battle.challenge(player.S);
 });
@@ -82,6 +115,15 @@ input.on('garage', () => {
 });
 input.on('escape', () => garage.hide());
 input.on('start', begin);
+input.on('radio', () => radio?.next());
+input.on('fx', () => {
+  save.settings.fx = !save.settings.fx;
+  persist();
+  stage.setBloom(save.settings.fx);
+  toast(save.settings.fx ? '화면 효과 켬' : '화면 효과 끔', '블룸(빛 번짐)', 1.2);
+});
+input.on('cancel', () => missions.cancel());
+input.on('weather', () => weather.toggle());
 document.getElementById('go')!.addEventListener('click', begin);
 
 function begin(): void {
@@ -91,12 +133,39 @@ function begin(): void {
   chase.snap(player.S);
   audio ??= createAudio();
   audio?.resume();
+  if (audio && !radio) {
+    radio = createRadio(audio.ctx, audio.master, save.settings.radio, (name, station) => {
+      save.settings.radio = station;
+      persist();
+      if (radio) toast(`라디오: ${name}`, '', 1.2);
+    });
+  }
   run.start(player.S);
+}
+
+// ----- 신호 위반 감지: 빨간불일 때 교차로 안으로 들어서면 -----
+let insideNode = -1;
+function checkRedLight(): void {
+  const S = player.S;
+  const n = graph.nearest(S.x, S.z);
+  const [nx, nz] = graph.pos(n);
+  const inside = Math.abs(S.x - nx) < EDGE && Math.abs(S.z - nz) < EDGE;
+  const key = n[0] * 100 + n[1];
+  if (!inside) {
+    if (insideNode === key) insideNode = -1;
+    return;
+  }
+  if (insideNode === key) return;
+  insideNode = key;
+  const speed = Math.hypot(S.vx, S.vz);
+  if (speed < 4 || !signals.has(n[0], n[1])) return;
+  const d = Math.abs(S.vx) > Math.abs(S.vz) ? (S.vx > 0 ? 1 : 3) : S.vz > 0 ? 0 : 2;
+  if (signals.state(n, d) === 'red') wanted.add('redlight');
 }
 
 // 개발 모드 디버그 훅. 브라우저 콘솔이나 자동 테스트에서 상태를 들여다볼 때 쓴다
 if (import.meta.env.DEV) {
-  (window as unknown as { __dc: unknown }).__dc = { player, traffic, battle, run, garage, save };
+  (window as unknown as { __dc: unknown }).__dc = { player, traffic, battle, run, garage, save, graph, signals, wanted, missions, weather };
 }
 
 // ----- 루프 -----
@@ -108,17 +177,38 @@ function frame(now: number): void {
   const S = player.S;
   const inp = started && !garage.open ? input.read() : IDLE;
 
+  lastHit = 0;
   const r = player.step(dt, inp, carStats, city.colliders, () => traffic.collidePlayer(S));
+  if (player.fell) {
+    player.reset();
+    toast('한강에 빠졌어요', '가까운 교차로로 돌아왔어요', 2);
+  }
   player.applyVisual(r, inp, dt);
-  traffic.update(dt, S, (n) => battle.racePace(n, S));
+  signals.update(t);
+  const playerNode = graph.nearest(S.x, S.z);
+  traffic.update(dt, S, (n) => battle.racePace(n, S), CHASE_PACE[wanted.stars]);
+  if (started) {
+    checkRedLight();
+    wanted.update(dt, S, traffic.police);
+    traffic.setChase(wanted.stars ? Math.min(wanted.stars + 1, traffic.police.length) : 0, playerNode);
+    missions.update(dt, S, player.crash, lastHit);
+  }
   const bt = battle.update(S);
   run.update(now, S);
+  weather.update(dt, camera);
 
-  // 목표 지점: 배틀 중이면 결승, 아니면 다음 체크포인트
-  const target = battle.active ? { x: battle.tx, z: battle.tz } : { x: run.tx, z: run.tz };
+  // 목표 지점: 미션 > 배틀 결승 > 타임어택 체크포인트
+  const mt = missions.target;
+  const target = mt ? { ...mt, color: COLOR.mission, label: '미션 목표' }
+    : battle.active ? { x: battle.tx, z: battle.tz, color: COLOR.battle, label: '결승 지점' }
+      : { x: run.tx, z: run.tz, color: COLOR.run, label: '다음 지점' };
   marker.setPosition(target.x, target.z);
-  marker.setColor(battle.active ? 0xffae4a : 0x4fd1ff);
+  marker.setColor(target.color);
   marker.update(t);
+  spotMarkers.forEach((m, i) => {
+    m.setVisible(!missions.active && missions.spots[i].cool <= 0);
+    m.update(t);
+  });
   city.update(t);
   player.setFlash(flash);
   flash = Math.max(0, flash - dt * 3);
@@ -130,13 +220,16 @@ function frame(now: number): void {
   const span = carStats.vmax / 5;
   const gear = Math.min(5, Math.floor(Math.abs(r.vf) / span));
   const within = Math.min(1, (Math.abs(r.vf) - gear * span) / span);
-  const cand = started && !battle.active ? traffic.nearbyRival(S) : null;
+  const cand = started && !battle.active && !missions.active ? traffic.nearbyRival(S) : null;
   const rivalSpec = battle.rival?.rival ?? null;
+  let nearestPolice = Infinity;
+  for (const p of traffic.police) if (p.police?.chasing) nearestPolice = Math.min(nearestPolice, Math.hypot(p.x - S.x, p.z - S.z));
 
   hud.frame({
     time: run.time,
     cp: run.cp,
     credits: save.credits,
+    level: levelInfo(),
     kmh: Math.abs(r.vf) * 3.6,
     reverse: r.vf < -0.5,
     within,
@@ -144,20 +237,26 @@ function frame(now: number): void {
     nitro: S.nitro,
     dist: Math.hypot(dx, dz),
     angle: Math.atan2(-(dx * Math.cos(S.h) - dz * Math.sin(S.h)), dx * fx + dz * fz),
+    navLabel: target.label,
+    navColor: hex(target.color),
     battle: bt && rivalSpec ? { name: `${rivalSpec.name} Lv${rivalSpec.level}`, ...bt } : null,
+    wanted: wanted.stars ? { stars: wanted.stars, bust: wanted.bustProgress, escape: wanted.escapeProgress } : null,
+    mission: missions.active ? { title: missions.active.title, objective: missions.objective, time: missions.timeLeft, sat: missions.satisfaction } : null,
     promptName: cand?.rival ? cand.rival.name : null,
     garageHint: canOpenGarage() && !garage.open,
     drift: player.driftTimer > 0 && player.driftScore > 5 ? player.driftScore : null,
     carName: carSpec.name,
     carLv,
+    status: started ? `${weather.raining ? '비' : '맑음'} · 라디오 ${radio?.name ?? '꺼짐'} · 효과 ${stage.bloom ? '켬' : '끔'}` : '',
   });
   hud.tick(dt);
-  minimap.draw(t, S, traffic.npcs, target, battle.active);
+  const extra: MapPoint[] = missions.spots.filter((sp) => sp.cool <= 0 && !missions.active).map((sp) => ({ x: sp.x, z: sp.z, color: hex(COLOR.mission), r: 3.5 }));
+  minimap.draw(t, S, traffic.npcs, { x: target.x, z: target.z, color: hex(target.color) }, extra);
 
-  audio?.update(48 + within * 85 + gear * 9 + (inp.up ? 8 : 0), inp.up, r.drifting);
+  audio?.update(dt, 48 + within * 85 + gear * 9 + (inp.up ? 8 : 0), inp.up, r.drifting, wanted.stars > 0 && nearestPolice < 140);
 
   chase.update(dt, t, S, r.vf, carStats.vmax, started);
-  renderer.render(scene, camera);
+  stage.render();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

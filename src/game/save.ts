@@ -7,11 +7,20 @@ export interface CarSave {
   glow: string;
 }
 
+export interface Settings {
+  /** 블룸 등 화면 효과 */
+  fx: boolean;
+  /** 0 = 끔, 1.. = 방송국 */
+  radio: number;
+}
+
 export interface SaveData {
   credits: number;
   current: string;
   cars: Record<string, CarSave>;
   best: number;
+  xp: number;
+  settings: Settings;
 }
 
 const KEY = 'dc-save';
@@ -23,6 +32,8 @@ function fresh(): SaveData {
     current: CARS[0].id,
     cars: { [CARS[0].id]: { parts: emptyParts(), paint: CARS[0].paint, glow: DEFAULT_GLOW } },
     best: 0,
+    xp: 0,
+    settings: { fx: true, radio: 1 },
   };
 }
 
@@ -41,6 +52,8 @@ function load(): SaveData {
     current: d.current && cars[d.current] ? d.current : CARS[0].id,
     cars,
     best: Number(d.best) || 0,
+    xp: Math.max(0, Number(d.xp) || 0),
+    settings: { ...base.settings, ...d.settings },
   };
 }
 
@@ -55,6 +68,23 @@ export function currentCar(): CarSave {
 }
 
 export function addCredits(n: number): void {
-  save.credits += n;
+  save.credits = Math.max(0, save.credits + n);
   persist();
+}
+
+/** 레벨 = 1 + floor(sqrt(xp / 100)). Lv2 100xp, Lv3 400xp, Lv4 900xp ... */
+export const levelOf = (xp: number): number => 1 + Math.floor(Math.sqrt(xp / 100));
+export const xpForLevel = (lv: number): number => (lv - 1) * (lv - 1) * 100;
+
+export function addXp(n: number): number {
+  const before = levelOf(save.xp);
+  save.xp += n;
+  persist();
+  const after = levelOf(save.xp);
+  return after > before ? after : 0;
+}
+
+export function levelInfo(): { lv: number; xp: number; next: number } {
+  const lv = levelOf(save.xp);
+  return { lv, xp: save.xp - xpForLevel(lv), next: xpForLevel(lv + 1) - xpForLevel(lv) };
 }

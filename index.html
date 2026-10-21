@@ -21,6 +21,14 @@
       <div class="row"><span>체크포인트</span><b class="num" id="cp">0 / 5</b></div>
       <div class="row"><span>최고 기록</span><b class="num" id="best">--:--.--</b></div>
       <div class="row"><span>크레딧</span><b class="num" id="credits">0</b></div>
+      <div class="row"><span id="level">Lv 1</span><span class="bar xp" id="xpBar"><i></i></span></div>
+    </div>
+
+    <div class="hud panel" id="mission">
+      <div class="label">미션 <span class="hint">X 포기</span></div>
+      <div class="mtitle" id="mTitle"></div>
+      <div class="mobj" id="mObjective"></div>
+      <div class="row"><b class="num mtime" id="mTime">0초</b><span id="mSat" hidden></span></div>
     </div>
 
     <div class="hud panel" id="nav">
@@ -39,13 +47,21 @@
       <div class="row"><span>상대</span><b class="num" id="bRival">0 m</b></div>
     </div>
 
+    <div class="hud panel" id="wanted">
+      <div class="stars" id="stars">☆☆☆</div>
+      <div class="label" id="wantedSub">경찰 추격</div>
+      <div class="bar" id="wantedBar"><i></i></div>
+    </div>
+
     <div class="hud panel" id="prompt"><kbd>F</kbd>상향등으로 <b id="promptName"></b>에게 배틀 신청</div>
     <div class="hud panel" id="garageHint"><kbd>G</kbd>차고 열기</div>
+    <div class="hud" id="status"></div>
 
     <div class="hud panel" id="help">
-      <kbd>W A S D</kbd> 운전 · <kbd>Space</kbd> 드리프트<br />
-      <kbd>Shift</kbd> 부스트 · <kbd>R</kbd> 리셋<br />
-      <kbd>F</kbd> 배틀 · <kbd>G</kbd> 차고 · <kbd>C</kbd> 카메라 · <kbd>M</kbd> 소리
+      <kbd>W A S D</kbd> 운전 · <kbd>Space</kbd> 드리프트 · <kbd>Shift</kbd> 부스트<br />
+      <kbd>F</kbd> 배틀 · <kbd>G</kbd> 차고 · <kbd>X</kbd> 미션 포기<br />
+      <kbd>N</kbd> 라디오 · <kbd>V</kbd> 효과 · <kbd>K</kbd> 날씨<br />
+      <kbd>R</kbd> 리셋 · <kbd>C</kbd> 카메라 · <kbd>M</kbd> 소리
     </div>
 
     <div class="hud panel" id="mapwrap"><canvas id="minimap" width="300" height="300"></canvas></div>
@@ -72,6 +88,7 @@
         <button class="tbtn" data-k="right" aria-label="오른쪽">▶</button>
         <button class="tbtn" data-k="battle">배틀</button>
         <button class="tbtn" data-k="garage">차고</button>
+        <button class="tbtn" data-k="radio">라디오</button>
       </div>
       <div class="tgroup">
         <button class="tbtn" data-k="hb">드리프트</button>
@@ -85,8 +102,8 @@
       <div class="card panel">
         <h1>미드나잇 <span>시티</span></h1>
         <p>
-          밤거리에 일반 차량과 라이벌 3명이 달리고 있어요. 파란 기둥 5곳을 빨리 통과하는 타임어택을 하다가, 이름표 달린 라이벌 뒤에
-          붙어 상향등을 켜면 배틀이 시작돼요. 번 크레딧으로 차고에서 차를 사고 튜닝하세요.
+          한강을 사이에 둔 밤의 도시예요. 신호를 지키며 달리거나, 어기고 경찰을 따돌리거나. 초록 기둥에서 배달·택시·스프린트 미션을 받고,
+          이름표 달린 라이벌 뒤에서 상향등을 켜면 배틀이 시작돼요. 번 크레딧으로 차고에서 차를 사고 튜닝하세요.
         </p>
         <div class="keys">
           <kbd>W / ↑</kbd><span>가속</span>
@@ -96,7 +113,8 @@
           <kbd>Shift</kbd><span>부스트</span>
           <kbd>F</kbd><span>상향등 (라이벌 배틀 신청)</span>
           <kbd>G</kbd><span>차고 (정차 중)</span>
-          <kbd>R · C · M</kbd><span>리셋 · 카메라 전환 · 소리</span>
+          <kbd>N · V · K</kbd><span>라디오 · 화면 효과 · 날씨</span>
+          <kbd>R · C · M · X</kbd><span>리셋 · 카메라 · 소리 · 미션 포기</span>
         </div>
         <button class="go" id="go">출발</button>
       </div>

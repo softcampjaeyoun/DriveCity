@@ -1,14 +1,15 @@
-import { BEST_BONUS, CHECKPOINTS, N, RUN_REWARD, roadAt } from '../config.ts';
+import { BEST_BONUS, CHECKPOINTS, RUN_REWARD } from '../config.ts';
 import type { PlayerState } from '../vehicle/player.ts';
+import type { RoadGraph } from '../world/graph.ts';
 import { fmtTime } from '../util/math.ts';
-import { addCredits, persist, save } from './save.ts';
+import { addCredits, addXp, persist, save } from './save.ts';
 
 export interface RunEvents {
   toast(big: string, sub: string, secs?: number): void;
   onBest(time: number): void;
 }
 
-/** 체크포인트 5곳 타임어택 */
+/** 체크포인트 5곳 타임어택. 자유 주행 중 항상 돌아간다 */
 export interface Run {
   readonly active: boolean;
   readonly cp: number;
@@ -21,7 +22,7 @@ export interface Run {
   resume(): void;
 }
 
-export function createRun(ev: RunEvents): Run {
+export function createRun(g: RoadGraph, ev: RunEvents): Run {
   let active = false;
   let cp = 0;
   let startAt = 0;
@@ -31,16 +32,10 @@ export function createRun(ev: RunEvents): Run {
   let pausedAt = 0;
 
   function pickTarget(S: PlayerState): void {
-    let i = 0;
-    let j = 0;
     let tries = 0;
-    do {
-      i = Math.floor(Math.random() * (N + 1));
-      j = Math.floor(Math.random() * (N + 1));
-      tries++;
-    } while (Math.hypot(roadAt(i) - S.x, roadAt(j) - S.z) < 170 && tries < 50);
-    tx = roadAt(i);
-    tz = roadAt(j);
+    let n = g.randomNode();
+    while (Math.hypot(g.pos(n)[0] - S.x, g.pos(n)[1] - S.z) < 170 && tries++ < 50) n = g.randomNode();
+    [tx, tz] = g.pos(n);
   }
 
   return {
@@ -88,6 +83,7 @@ export function createRun(ev: RunEvents): Run {
         ev.onBest(time);
       }
       addCredits(reward);
+      addXp(30);
       ev.toast(
         fmtTime(time),
         `${isBest ? '최고 기록이에요' : `최고 기록 ${fmtTime(save.best)}`} · +${reward.toLocaleString('ko-KR')} 크레딧 · 3초 뒤 다시 시작해요`,

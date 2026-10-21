@@ -33,6 +33,7 @@ export const MODELS: Record<string, ModelDef> = {
   hatchback: kenney('hatchback-sports', 3.9),
   delivery: kenney('delivery', 5.0),
   taxi: kenney('taxi', 4.3),
+  police: kenney('police', 4.4),
   city_bus: { file: 'rgsdev/Bus.fbx', length: 11, attribution: RGSDEV },
   village_bus: { file: 'rgsdev/Bus.fbx', length: 7.5, attribution: RGSDEV },
   express_bus: { file: 'rgsdev/Bus.fbx', length: 12, attribution: RGSDEV },

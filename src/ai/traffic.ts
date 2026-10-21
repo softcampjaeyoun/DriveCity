@@ -1,12 +1,14 @@
 import * as THREE from 'three';
-import { DIRS, N, reduceMotion } from '../config.ts';
+import { DIRS, LANES, backOf, leftTurn, reduceMotion, rightTurn } from '../config.ts';
 import { glowTexture, nameTag } from '../render/textures.ts';
-import { rint } from '../util/math.ts';
-import { KINDS, TRAFFIC_MIX, probesFor, type VehicleKind } from '../vehicle/kinds.ts';
+import { clamp, rint } from '../util/math.ts';
+import { KINDS, POLICE_COUNT, TRAFFIC_MIX, probesFor, type VehicleKind } from '../vehicle/kinds.ts';
 import { swapModel } from '../vehicle/models.ts';
 import { buildForKind, buildSedan } from '../vehicle/procedural.ts';
 import { PROBE, RADIUS, type PlayerState } from '../vehicle/player.ts';
-import { curveSeg, dirHeading, inGrid, lineSeg, nodePos, segAt, type Node, type Segment } from '../world/roads.ts';
+import type { Node, RoadGraph } from '../world/graph.ts';
+import { curveSeg, dirHeading, laneIndex, lineSeg, rightOf, segAt, type Segment } from '../world/roads.ts';
+import type { Signals } from '../world/signals.ts';
 
 export interface RivalSpec {
   name: string;
@@ -22,6 +24,13 @@ export interface RivalSpec {
   model?: string;
 }
 
+export interface PoliceState {
+  chasing: boolean;
+  lights: [THREE.Mesh, THREE.Mesh];
+  routeTimer: number;
+  blink: number;
+}
+
 export interface Npc {
   mesh: THREE.Group;
   kind: VehicleKind;
@@ -31,9 +40,15 @@ export interface Npc {
   from: Node;
   to: Node;
   dir: number;
+  /** 다음 교차로에서 갈 방향. 차선을 미리 잡기 위해 직선 구간 시작 때 정한다 */
+  nextDir: number;
   route: number[];
   seg: Segment;
   s: number;
+  /** 도로 중앙에서 오른쪽 거리. 차선 변경 중엔 두 차선 사이 값 */
+  lat: number;
+  latTarget: number;
+  laneCool: number;
   speed: number;
   cruise: number;
   stun: number;
@@ -43,6 +58,7 @@ export interface Npc {
   rival: RivalSpec | null;
   racing: boolean;
   cool: number;
+  police: PoliceState | null;
 }
 
 export const RIVALS: readonly RivalSpec[] = [
@@ -51,147 +67,269 @@ export const RIVALS: readonly RivalSpec[] = [
   { name: '레드폭스', body: 0xc0202c, glow: 'rgba(255,122,60,0.85)', hex: '#ff7a3c', level: 3, reward: 3200, pace: 56, model: 'rival_3' },
 ];
 
-export interface Traffic {
-  npcs: Npc[];
-  /** racePace: 배틀 중인 라이벌의 목표 속도 */
-  update(dt: number, player: PlayerState, racePace: (n: Npc) => number): void;
-  collidePlayer(S: PlayerState): void;
-  nearbyRival(S: PlayerState, range?: number): Npc | null;
+export interface TrafficEvents {
+  /** 플레이어가 NPC 와 부딪혔을 때. impact 는 상대 속도 m/s */
+  onHit(n: Npc, impact: number): void;
 }
 
-export function createTraffic(scene: THREE.Scene): Traffic {
-  function buildMesh(kind: VehicleKind, hex: number, rival: RivalSpec | null, index: number): THREE.Group {
-    const g = new THREE.Group();
+export interface Traffic {
+  npcs: Npc[];
+  police: Npc[];
+  update(dt: number, player: PlayerState, racePace: (n: Npc) => number, chasePace: number): void;
+  collidePlayer(S: PlayerState): void;
+  nearbyRival(S: PlayerState, range?: number): Npc | null;
+  /** 라이벌·경찰에게 목적지까지 경로를 준다 */
+  assignRoute(n: Npc, goal: Node): void;
+  /** 수배 등급에 맞춰 경찰 몇 대가 추격할지 */
+  setChase(count: number, playerNode: Node): void;
+}
+
+const LANE_RATE = 2.2;
+const SIGNAL_STOP = 4.6;
+
+export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals, ev: TrafficEvents): Traffic {
+  function buildMesh(kind: VehicleKind, hex: number, rival: RivalSpec | null, index: number): { mesh: THREE.Group; police: PoliceState | null } {
+    const mesh = new THREE.Group();
     const visual = rival ? buildSedan(hex, kind.length, kind.width) : buildForKind(kind, hex);
     visual.name = 'fallback';
-    g.add(visual);
+    mesh.add(visual);
+    let police: PoliceState | null = null;
     if (rival) {
       const ug = new THREE.Mesh(
         new THREE.PlaneGeometry(3.4, 6).rotateX(-Math.PI / 2),
-        new THREE.MeshBasicMaterial({
-          map: glowTexture(rival.glow),
-          transparent: true,
-          depthWrite: false,
-          blending: THREE.AdditiveBlending,
-        }),
+        new THREE.MeshBasicMaterial({ map: glowTexture(rival.glow), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }),
       );
       ug.position.y = 0.04;
-      g.add(ug, nameTag(`${rival.name} Lv${rival.level}`, rival.hex));
+      mesh.add(ug, nameTag(`${rival.name} Lv${rival.level}`, rival.hex));
+    }
+    if (kind.id === 'police') {
+      const geo = new THREE.BoxGeometry(0.5, 0.18, 0.4);
+      const red = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xff2a2a }));
+      const blue = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x2a6bff }));
+      red.position.set(-0.45, 1.68, -0.2);
+      blue.position.set(0.45, 1.68, -0.2);
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.12, 0.42), new THREE.MeshLambertMaterial({ color: 0x15171c }));
+      bar.position.set(0, 1.56, -0.2);
+      const glow = new THREE.PointLight(0xff4a4a, 0, 14);
+      glow.position.set(0, 2.2, 0);
+      glow.name = 'policeGlow';
+      mesh.add(bar, red, blue, glow);
+      red.visible = blue.visible = false;
+      police = { chasing: false, lights: [red, blue], routeTimer: 0, blink: 0 };
     }
     const pool = kind.models;
-    swapModel(g, visual, rival ? rival.model : pool?.length ? pool[index % pool.length] : undefined, kind.tintModel ? hex : undefined);
-    scene.add(g);
-    return g;
+    swapModel(mesh, visual, rival ? rival.model : pool?.length ? pool[index % pool.length] : undefined, kind.tintModel ? hex : undefined);
+    scene.add(mesh);
+    return { mesh, police };
   }
 
   const npcs: Npc[] = [];
-  function spawn(kind: VehicleKind, hex: number, rival: RivalSpec | null, index = 0): void {
+  const police: Npc[] = [];
+
+  function chooseDir(n: Npc): number {
+    const next = n.route.shift();
+    if (next !== undefined && g.hasEdge(n.to[0], n.to[1], next)) return next;
+    const [i, j] = n.to;
+    const back = backOf(n.dir);
+    const opts: number[] = [];
+    for (let k = 0; k < 4; k++) {
+      if (k === back || !g.hasEdge(i, j, k)) continue;
+      opts.push(k);
+      if (k === n.dir) opts.push(k, k); // 직진 선호
+    }
+    return opts.length ? opts[rint(opts.length)] : back;
+  }
+  /** 직선 구간에 들어설 때 다음 방향과 그에 맞는 차선을 정한다 */
+  function planNext(n: Npc): void {
+    n.nextDir = chooseDir(n);
+    if (n.nextDir === rightTurn(n.dir)) n.latTarget = LANES[1];
+    else if (n.nextDir === leftTurn(n.dir) || n.nextDir === backOf(n.dir)) n.latTarget = LANES[0];
+    else if (n.kind.lane !== undefined) n.latTarget = LANES[n.kind.lane];
+  }
+
+  function spawn(kind: VehicleKind, hex: number, rival: RivalSpec | null, index = 0): Npc {
     let from: Node;
     let dir: number;
     do {
-      from = [rint(N + 1), rint(N + 1)];
+      from = g.randomNode();
       dir = rint(4);
-    } while (!inGrid(from[0] + DIRS[dir][0], from[1] + DIRS[dir][1]) || Math.hypot(...nodePos(from)) < 80);
-    const seg = lineSeg(from, dir);
+    } while (!g.hasEdge(from[0], from[1], dir) || Math.hypot(...g.pos(from)) < 80);
+    const lane = kind.lane ?? rint(2);
+    const seg = lineSeg(g, from, dir, 0);
     const s = Math.random() * seg.len;
-    const [x, z] = segAt(seg, s);
     const [c0, c1] = kind.cruise;
+    const built = buildMesh(kind, hex, rival, index);
     const n: Npc = {
-      mesh: buildMesh(kind, hex, rival, index),
+      mesh: built.mesh,
       kind,
       probes: probesFor(kind.length),
       radius: kind.width / 2 + 0.15,
       from,
       dir,
+      nextDir: dir,
       to: [from[0] + DIRS[dir][0], from[1] + DIRS[dir][1]],
       route: [],
       seg,
       s,
+      lat: LANES[lane],
+      latTarget: LANES[lane],
+      laneCool: Math.random() * 4,
       speed: 0,
       cruise: c0 + Math.random() * (c1 - c0),
       stun: 0,
-      x,
-      z,
+      x: 0,
+      z: 0,
       h: dirHeading(dir),
       rival,
       racing: false,
       cool: 0,
+      police: built.police,
     };
-    n.mesh.position.set(x, 0, z);
+    planNext(n);
+    [n.x, n.z] = positionOf(n);
+    n.mesh.position.set(n.x, 0, n.z);
     n.mesh.rotation.y = n.h;
     npcs.push(n);
+    return n;
   }
   for (const [id, count] of TRAFFIC_MIX) {
     const kind = KINDS[id];
     for (let i = 0; i < count; i++) spawn(kind, kind.colors[i % kind.colors.length], null, i);
   }
   for (const r of RIVALS) spawn(KINDS.rival, r.body, r);
+  for (let i = 0; i < POLICE_COUNT; i++) police.push(spawn(KINDS.police, KINDS.police.colors[0], null, i));
 
-  function chooseDir(n: Npc): number {
-    const next = n.route.shift();
-    if (next !== undefined) return next;
-    const [i, j] = n.to;
-    const back = (n.dir + 2) % 4;
-    const opts: number[] = [];
-    for (let k = 0; k < 4; k++) {
-      if (k === back || !inGrid(i + DIRS[k][0], j + DIRS[k][1])) continue;
-      opts.push(k);
-      if (k === n.dir) opts.push(k, k); // 직진 선호
-    }
-    return opts.length ? opts[rint(opts.length)] : back;
+  function positionOf(n: Npc): [number, number] {
+    const [x, z] = segAt(n.seg, n.s);
+    if (n.seg.c) return [x, z];
+    const [rx, rz] = rightOf(n.seg.dir);
+    return [x + rx * n.lat, z + rz * n.lat];
   }
+
   function advanceSeg(n: Npc): void {
     if (n.seg.c) {
-      n.seg = lineSeg(n.from, n.dir);
+      n.seg = lineSeg(g, n.from, n.dir, 0);
+      planNext(n);
       return;
     }
-    const d2 = chooseDir(n);
-    n.seg = curveSeg(n.to, n.dir, d2);
+    const d2 = n.nextDir;
+    const laneOut = d2 === rightTurn(n.dir) ? 1 : d2 === n.dir ? laneIndex(n.lat) : 0;
+    n.seg = curveSeg(g, n.to, n.dir, d2, n.lat, LANES[laneOut]);
+    n.lat = n.latTarget = LANES[laneOut];
     n.from = n.to;
     n.dir = d2;
     n.to = [n.from[0] + DIRS[d2][0], n.from[1] + DIRS[d2][1]];
   }
 
-  /** 같은 방향으로 앞에 있는 차(또는 플레이어)의 뒷범퍼까지의 거리 */
-  function gapAhead(n: Npc, S: PlayerState): number {
+  /** 같은 방향으로 앞에 있는 차(또는 플레이어)의 뒷범퍼까지의 거리와 그 차의 속도 */
+  function gapAhead(n: Npc, S: PlayerState, latShift = 0): { gap: number; speed: number } {
     const fx = Math.sin(n.h);
     const fz = Math.cos(n.h);
     const myFront = n.kind.length / 2;
     let best = Infinity;
-    const test = (ox: number, oz: number, oh: number | null, oHalf: number) => {
+    let speed = 0;
+    const test = (ox: number, oz: number, oh: number | null, oHalf: number, ov: number) => {
       const dx = ox - n.x;
       const dz = oz - n.z;
       const fwd = dx * fx + dz * fz - myFront - oHalf;
-      if (fwd <= -oHalf || fwd > 16 || Math.abs(dx * fz - dz * fx) > 2.4) return;
+      const cross = dx * fz - dz * fx;
+      if (fwd <= -oHalf || fwd > 18 || Math.abs(cross + latShift) > 2.2) return;
       if (oh !== null && Math.sin(oh) * fx + Math.cos(oh) * fz < 0.3) return;
-      best = Math.min(best, Math.max(0, fwd));
+      if (fwd < best) {
+        best = Math.max(0, fwd);
+        speed = ov;
+      }
     };
-    for (const o of npcs) if (o !== n) test(o.x, o.z, o.h, o.kind.length / 2);
-    test(S.x, S.z, null, 2.1);
-    return best;
+    for (const o of npcs) if (o !== n) test(o.x, o.z, o.h, o.kind.length / 2, o.speed);
+    test(S.x, S.z, null, 2.1, Math.hypot(S.vx, S.vz));
+    return { gap: best, speed };
+  }
+
+  /** 옆 차선으로 옮겨도 되는지 (앞뒤 14m 안에 같은 방향 차가 없는지) */
+  function laneClear(n: Npc, S: PlayerState, targetLat: number): boolean {
+    const fx = Math.sin(n.h);
+    const fz = Math.cos(n.h);
+    const shift = targetLat - n.lat;
+    const blocked = (ox: number, oz: number, oh: number | null) => {
+      const dx = ox - n.x;
+      const dz = oz - n.z;
+      const fwd = dx * fx + dz * fz;
+      const cross = -(dx * fz - dz * fx); // 오른쪽이 +
+      if (Math.abs(fwd) > 14 || Math.abs(cross - shift) > 2.2) return false;
+      if (oh !== null && Math.sin(oh) * fx + Math.cos(oh) * fz < 0.3) return false;
+      return true;
+    };
+    for (const o of npcs) if (o !== n && blocked(o.x, o.z, o.h)) return false;
+    return !blocked(S.x, S.z, null);
+  }
+
+  function considerLaneChange(n: Npc, S: PlayerState, ahead: { gap: number; speed: number }): void {
+    if (n.seg.c || n.laneCool > 0 || n.seg.len - n.s < 30) return;
+    const cur = laneIndex(n.lat);
+    if (Math.abs(n.latTarget - n.lat) > 0.05) return;
+    const wantLane = laneIndex(n.latTarget);
+    // 회전 차선 잡기: planNext 가 정한 latTarget 이 지금 차선과 다르면 비었을 때 옮긴다
+    if (wantLane !== cur) {
+      if (laneClear(n, S, n.latTarget)) n.laneCool = 3;
+      else n.latTarget = n.lat; // 못 옮기면 일단 유지, 다음에 다시 시도
+      return;
+    }
+    // 추월: 앞차가 내 순항 속도보다 느리면 옆 차선이 비었을 때 옮긴다
+    const passing = n.racing ? ahead.gap < 30 : ahead.gap < 18 && ahead.speed < n.cruise - 2;
+    if (!passing || n.nextDir !== n.dir) return;
+    const other = LANES[1 - cur];
+    if (n.kind.lane !== undefined && 1 - cur !== n.kind.lane && !n.racing) return;
+    if (laneClear(n, S, other)) {
+      n.latTarget = other;
+      n.laneCool = n.racing ? 2 : 5;
+    }
+  }
+
+  function signalWant(n: Npc): number {
+    if (n.seg.c) return Infinity;
+    const light = signals.state(n.to, n.dir);
+    if (light === 'green') return Infinity;
+    const remaining = n.seg.len - n.s - SIGNAL_STOP;
+    if (light === 'yellow' && remaining < 10) return Infinity; // 황색에 가까우면 통과
+    return Math.max(0, (remaining - 1) * 1.3);
   }
 
   return {
     npcs,
+    police,
 
-    update(dt, S, racePace) {
+    update(dt, S, racePace, chasePace) {
       for (const n of npcs) {
         let want: number;
-        if (n.racing) {
-          const turnSoon = !n.seg.c && n.seg.len - n.s < 24 && n.route.length > 0 && n.route[0] !== n.dir;
+        const chasing = !!n.police?.chasing;
+        if (n.racing || chasing) {
+          const turnSoon = !n.seg.c && n.seg.len - n.s < 24 && n.nextDir !== n.dir;
           if (n.seg.c && n.seg.turn) want = 15;
-          else want = turnSoon ? 17 : racePace(n);
+          else if (turnSoon) want = 17;
+          else if (chasing) {
+            want = chasePace;
+            const dx = S.x - n.x;
+            const dz = S.z - n.z;
+            const fwd = dx * Math.sin(n.h) + dz * Math.cos(n.h);
+            const pv = Math.hypot(S.vx, S.vz);
+            if (fwd > 0 && fwd < 16) want = Math.max(want, pv + 6);
+            // 바짝 붙었으면 계속 들이받지 않고 속도를 맞춰 가둔다
+            if (Math.hypot(dx, dz) < 7) want = Math.min(want, pv + 1.5);
+          } else want = racePace(n);
+          if (n.racing) considerLaneChange(n, S, gapAhead(n, S));
         } else {
           want = n.seg.turn ? Math.min(n.cruise, n.kind.turnSpeed) : n.cruise;
-          const gap = gapAhead(n, S);
-          if (gap < 14) want = Math.min(want, Math.max(0, (gap - 4) * 1.4));
+          const ahead = gapAhead(n, S);
+          if (ahead.gap < 14) want = Math.min(want, Math.max(0, (ahead.gap - 4) * 1.4));
+          want = Math.min(want, signalWant(n));
+          considerLaneChange(n, S, ahead);
         }
         if (n.stun > 0) {
           n.stun -= dt;
           want = 0;
         }
         if (n.cool > 0) n.cool -= dt;
-        // 버스는 무거워서 가감속이 느리다
+        if (n.laneCool > 0) n.laneCool -= dt;
         const heavy = n.kind.length > 8 ? 0.6 : 1;
         n.speed += (want - n.speed) * Math.min(1, dt * (want < n.speed ? 3 : 1.2) * heavy);
         n.s += n.speed * dt;
@@ -199,7 +337,8 @@ export function createTraffic(scene: THREE.Scene): Traffic {
           n.s -= n.seg.len;
           advanceSeg(n);
         }
-        const [x, z] = segAt(n.seg, n.s);
+        if (!n.seg.c) n.lat += clamp(n.latTarget - n.lat, -LANE_RATE * dt, LANE_RATE * dt);
+        const [x, z] = positionOf(n);
         const mx = x - n.x;
         const mz = z - n.z;
         if (mx * mx + mz * mz > 1e-6) n.h = Math.atan2(mx, mz);
@@ -207,6 +346,24 @@ export function createTraffic(scene: THREE.Scene): Traffic {
         n.z = z;
         n.mesh.position.set(x, 0, z);
         n.mesh.rotation.y = n.h;
+
+        if (n.police) {
+          const p = n.police;
+          const glow = n.mesh.getObjectByName('policeGlow') as THREE.PointLight | undefined;
+          if (p.chasing) {
+            p.blink += dt * 8;
+            const phase = Math.floor(p.blink) % 2 === 0;
+            p.lights[0].visible = phase;
+            p.lights[1].visible = !phase;
+            if (glow) {
+              glow.intensity = 1.6;
+              glow.color.setHex(phase ? 0xff3a3a : 0x3a6bff);
+            }
+          } else {
+            p.lights[0].visible = p.lights[1].visible = false;
+            if (glow) glow.intensity = 0;
+          }
+        }
       }
     },
 
@@ -220,8 +377,8 @@ export function createTraffic(scene: THREE.Scene): Traffic {
         const nfx = Math.sin(n.h);
         const nfz = Math.cos(n.h);
         const minD = RADIUS + n.radius;
-        // 버스는 플레이어보다 훨씬 무거워 거의 밀리지 않는다
         const mass = n.kind.length > 8 ? 6 : n.kind.length > 6 ? 3 : 1;
+        let touched = 0;
         for (const a of PROBE) {
           for (const b of n.probes) {
             const qx = n.x + nfx * b;
@@ -242,11 +399,13 @@ export function createTraffic(scene: THREE.Scene): Traffic {
               S.vx *= 0.88;
               S.vz *= 0.88;
               hit = Math.max(hit, -rel * Math.min(mass, 2));
+              touched = Math.max(touched, -rel);
             }
-            if (n.racing) n.speed *= 0.7;
+            if (n.racing || n.police?.chasing) n.speed *= 0.7;
             else n.stun = mass > 1 ? 0.8 : 1.6;
           }
         }
+        if (touched > 2) ev.onHit(n, touched);
       }
       if (hit > 3 && !reduceMotion) S.shake = Math.min(1, S.shake + hit / 25);
     },
@@ -263,6 +422,38 @@ export function createTraffic(scene: THREE.Scene): Traffic {
         }
       }
       return best;
+    },
+
+    assignRoute(n, goal) {
+      n.route = g.route(n.to, goal);
+      if (!n.seg.c) planNext(n);
+    },
+
+    setChase(count, playerNode) {
+      const sorted = police
+        .map((p) => ({ p, d: g.dist(p.to, playerNode) }))
+        .sort((a, b) => a.d - b.d);
+      sorted.forEach(({ p }, idx) => {
+        const st = p.police!;
+        const should = idx < count;
+        if (should && !st.chasing) {
+          st.chasing = true;
+          st.routeTimer = 0;
+        }
+        if (!should && st.chasing) {
+          st.chasing = false;
+          p.route = [];
+          if (!p.seg.c) planNext(p);
+        }
+        if (st.chasing) {
+          st.routeTimer -= 1 / 60;
+          if (st.routeTimer <= 0) {
+            st.routeTimer = 1.5;
+            p.route = g.route(p.to, playerNode);
+            if (!p.seg.c) planNext(p);
+          }
+        }
+      });
     },
   };
 }

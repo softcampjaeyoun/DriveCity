@@ -57,8 +57,53 @@ kbd {
   min-width: 150px;
 }
 #run .time { font-size: 26px; font-weight: 700; line-height: 1.1; }
-#run .row, #battle .row { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--muted); }
+#run .row, #battle .row, #mission .row { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--muted); align-items: center; }
 #run .row b, #battle .row b { color: var(--ink); font-weight: 600; }
+#run .bar.xp { flex: 1; margin-left: 10px; }
+#run .bar.xp i { background: var(--ok); box-shadow: none; }
+
+#mission {
+  top: calc(170px + env(safe-area-inset-top, 0px));
+  left: calc(14px + env(safe-area-inset-left, 0px));
+  padding: 10px 14px;
+  display: none;
+  gap: 4px;
+  min-width: 190px;
+  max-width: 260px;
+  border-color: rgba(92, 224, 154, 0.5);
+}
+#mission.on { display: grid; }
+#mission .label .hint { float: right; letter-spacing: 0; text-transform: none; }
+#mission .mtitle { font-weight: 600; font-size: 15px; }
+#mission .mobj { font-size: 12px; color: var(--muted); line-height: 1.4; }
+#mission .mtime { font-size: 20px; color: var(--ok); }
+#mission .mtime.low { color: var(--warn); }
+
+#wanted {
+  top: calc(84px + env(safe-area-inset-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 16px 8px;
+  display: none;
+  gap: 3px;
+  min-width: 170px;
+  text-align: center;
+  border-color: rgba(255, 90, 106, 0.6);
+}
+#wanted.on { display: grid; }
+#wanted .stars { font-size: 22px; color: var(--warn); letter-spacing: 0.1em; line-height: 1.1; }
+#wanted .bar i { transition: width 0.1s linear; }
+#battle.on ~ #wanted.on { top: calc(160px + env(safe-area-inset-top, 0px)); }
+
+#status {
+  left: 50%;
+  bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  white-space: nowrap;
+}
 
 #nav {
   top: calc(14px + env(safe-area-inset-top, 0px));
@@ -269,7 +314,8 @@ button:focus-visible { outline: 2px solid var(--neon); outline-offset: 3px; }
 .coarse #gauge { bottom: calc(110px + env(safe-area-inset-bottom, 0px)); right: 50%; transform: translateX(50%); min-width: 160px; padding: 8px 12px; }
 .coarse #speed { font-size: 38px; }
 .coarse #nav { top: auto; bottom: calc(230px + env(safe-area-inset-bottom, 0px)); }
-.coarse #prompt, .coarse #garageHint { display: none !important; }
+.coarse #prompt, .coarse #garageHint, .coarse #status { display: none !important; }
+.coarse #mission { top: calc(150px + env(safe-area-inset-top, 0px)); max-width: 200px; }
 .tgroup { display: flex; gap: 10px; pointer-events: auto; }
 .tbtn {
   width: 70px;

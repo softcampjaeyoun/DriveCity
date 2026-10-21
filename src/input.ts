@@ -9,17 +9,21 @@ export interface Input {
 
 export const IDLE: Readonly<Input> = { up: false, down: false, left: false, right: false, hb: false, nitro: false };
 
-type Action = 'reset' | 'camera' | 'mute' | 'battle' | 'garage' | 'start' | 'escape';
+export type Action = 'reset' | 'camera' | 'mute' | 'battle' | 'garage' | 'start' | 'escape' | 'radio' | 'fx' | 'cancel' | 'weather';
 const KEY_ACTIONS: Record<string, Action> = {
   KeyR: 'reset',
   KeyC: 'camera',
   KeyM: 'mute',
   KeyF: 'battle',
   KeyG: 'garage',
+  KeyN: 'radio',
+  KeyV: 'fx',
+  KeyX: 'cancel',
+  KeyK: 'weather',
   Enter: 'start',
   Escape: 'escape',
 };
-const TOUCH_ACTIONS: Record<string, Action> = { battle: 'battle', garage: 'garage' };
+const TOUCH_ACTIONS: Record<string, Action> = { battle: 'battle', garage: 'garage', radio: 'radio' };
 
 export interface InputSystem {
   read(): Input;

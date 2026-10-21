@@ -14,8 +14,8 @@ export function glowTexture(inner: string, size = 128): THREE.CanvasTexture {
   return new THREE.CanvasTexture(c);
 }
 
-/** 빌딩 창문 불빛. emissiveMap 으로 사용 */
-export function windowTexture(seed: number): THREE.CanvasTexture {
+/** 빌딩 창문 불빛. emissiveMap 으로 사용. warm 은 따뜻한 불빛 비율 */
+export function windowTexture(seed: number, warm = 0.78): THREE.CanvasTexture {
   const r = mulberry32(seed);
   const c = document.createElement('canvas');
   c.width = 128;
@@ -26,9 +26,9 @@ export function windowTexture(seed: number): THREE.CanvasTexture {
   for (let row = 0; row < 16; row++) {
     for (let col = 0; col < 8; col++) {
       if (r() > 0.36) continue;
-      const warm = r() < 0.78;
+      const isWarm = r() < warm;
       g.globalAlpha = 0.45 + r() * 0.55;
-      g.fillStyle = warm
+      g.fillStyle = isWarm
         ? `hsl(${32 + r() * 16}, 90%, ${52 + r() * 22}%)`
         : `hsl(${190 + r() * 25}, 70%, ${58 + r() * 15}%)`;
       g.fillRect(col * 16 + 3, row * 16 + 4, 10, 9);

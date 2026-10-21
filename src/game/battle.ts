@@ -1,9 +1,8 @@
-import { N, roadAt } from '../config.ts';
 import type { Npc, Traffic } from '../ai/traffic.ts';
 import type { PlayerState } from '../vehicle/player.ts';
-import { routeTo } from '../world/roads.ts';
-import { clamp, josa, rint } from '../util/math.ts';
-import { addCredits } from './save.ts';
+import type { RoadGraph } from '../world/graph.ts';
+import { clamp, josa } from '../util/math.ts';
+import { addCredits, addXp } from './save.ts';
 
 export interface BattleEvents {
   toast(big: string, sub: string, secs?: number): void;
@@ -23,7 +22,7 @@ export interface Battle {
   racePace(n: Npc, S: PlayerState): number;
 }
 
-export function createBattle(traffic: Traffic, ev: BattleEvents): Battle {
+export function createBattle(g: RoadGraph, traffic: Traffic, ev: BattleEvents): Battle {
   let active = false;
   let rival: Npc | null = null;
   let tx = 0;
@@ -34,6 +33,7 @@ export function createBattle(traffic: Traffic, ev: BattleEvents): Battle {
     const spec = rival.rival;
     if (win) {
       addCredits(spec.reward);
+      addXp(50 * spec.level);
       ev.toast('배틀 승리', `${spec.name}${josa(spec.name, '을', '를')} 이겼어요 · +${spec.reward.toLocaleString('ko-KR')} 크레딧`, 2.8);
     } else {
       ev.toast('배틀 패배', `${spec.name}${josa(spec.name, '이', '가')} 먼저 도착했어요`, 2.8);
@@ -64,22 +64,15 @@ export function createBattle(traffic: Traffic, ev: BattleEvents): Battle {
       if (active) return false;
       const r = traffic.nearbyRival(S);
       if (!r?.rival) return false;
-      let i = 0;
-      let j = 0;
-      let d = 0;
+      let goal = g.randomNode();
       let tries = 0;
-      do {
-        i = rint(N + 1);
-        j = rint(N + 1);
-        d = Math.hypot(roadAt(i) - S.x, roadAt(j) - S.z);
-        tries++;
-      } while ((d < 260 || d > 480) && tries < 80);
+      const far = () => Math.hypot(g.pos(goal)[0] - S.x, g.pos(goal)[1] - S.z);
+      while ((far() < 260 || far() > 520) && tries++ < 80) goal = g.randomNode();
       active = true;
       rival = r;
-      tx = roadAt(i);
-      tz = roadAt(j);
+      [tx, tz] = g.pos(goal);
       r.racing = true;
-      r.route = routeTo(r.to, [i, j]);
+      traffic.assignRoute(r, goal);
       ev.pauseRun();
       ev.toast(`VS ${r.rival.name} Lv${r.rival.level}`, '주황 기둥에 먼저 도착하면 이겨요', 2.2);
       return true;
