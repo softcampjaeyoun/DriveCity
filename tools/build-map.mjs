@@ -274,10 +274,27 @@ function ringCentroid(r) {
   return [x / (r.length / 2), z / (r.length / 2)];
 }
 
+// ----- 부가 데이터: POI(정류장·상점), V-World 건물 (같은 bbox 로 받아 둔 파일이 있으면 쓴다) -----
+const bboxTag = argBox ? `${argBox.south}_${argBox.west}_${argBox.north}_${argBox.east}` : '';
+const dataDir = IN.replace(/[^\\/]+$/, '');
+const optional = (file) => { try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return null; } };
+const poisRaw = bboxTag ? optional(`${dataDir}pois-${bboxTag}.json`) : null;
+const vworldRaw = bboxTag ? optional(`${dataDir}vworld-${bboxTag}.json`) : null;
+const pois = [];
+if (poisRaw) {
+  for (const p of poisRaw) {
+    const [x, z] = proj({ lat: p.lat, lon: p.lon });
+    if (!inBox([x, z])) continue;
+    pois.push({ x, z, kind: p.kind, sub: p.sub, name: p.name, brand: p.brand });
+  }
+  console.log(`  POI ${pois.length}개 (정류장 ${pois.filter((p) => p.kind === 'bus_stop').length}, 상점·시설 ${pois.filter((p) => p.kind === 'shop' || p.kind === 'amenity').length}, 역 ${pois.filter((p) => p.kind === 'station' || p.kind === 'subway_entrance').length})`);
+}
+
 // ----- 건물 -----
 const buildings = [];
 let seed = 1;
 const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+const APT_RE = /아파트|APT|힐스테이트|자이\b|래미안|푸르지오|e편한세상|롯데캐슬|아이파크|더샵|위브|센트럴|주공|빌라|타운|맨션/i;
 function buildingHeight(t) {
   const h = num(t.height);
   if (Number.isFinite(h) && h > 2) return Math.min(h, 300);
@@ -304,15 +321,58 @@ function pushBuilding(ring, t) {
   const apt = t.building === 'apartments' || t.building === 'dormitory' || (t.building === 'residential' && h > 20);
   buildings.push({ ring: r, h, kind: apt ? 'apt' : h > 30 ? 'tower' : area > 600 ? 'block' : 'low', name: tagName(t) });
 }
-for (const w of ways.values()) {
-  if (!w.tags?.building || w.tags.building === 'no') continue;
-  const ring = closedWayRing(w);
-  if (ring) pushBuilding(ring, w.tags);
+if (vworldRaw) {
+  // 국토부 건물통합정보가 있으면 그것을 건물의 기준으로 쓴다 (전수 조사라 빈 땅이 거의 없고 층수·이름이 있다)
+  let noFloor = 0;
+  for (const b of vworldRaw) {
+    const ring = simplifyRing(b.ring.map(([lon, lat]) => proj({ lat, lon })).flat());
+    if (ring.length < 6) continue;
+    const area = Math.abs(ringArea(ring));
+    if (area < 12) continue;
+    const c = ringCentroid(ring);
+    if (!inBox(c)) continue;
+    let h;
+    if (b.floors > 0) h = b.floors * 3.1 + 1.2;
+    else if (b.height > 2) h = b.height;
+    else { h = area > 300 ? 9 + rnd() * 6 : 5 + rnd() * 4; noFloor++; }
+    h = Math.round(Math.min(h, 560) * 10) / 10;
+    const apt = APT_RE.test(b.name) || (b.floors >= 12 && area > 350 && area < 2500);
+    buildings.push({ ring, h, kind: apt ? 'apt' : h > 30 ? 'tower' : area > 600 ? 'block' : 'low', name: b.name || '' });
+  }
+  console.log(`  V-World 건물 ${buildings.length}동 (층수 없음 ${noFloor}동은 추정)`);
+} else {
+  for (const w of ways.values()) {
+    if (!w.tags?.building || w.tags.building === 'no') continue;
+    const ring = closedWayRing(w);
+    if (ring) pushBuilding(ring, w.tags);
+  }
+  for (const rel of relations) {
+    if (!rel.tags?.building || rel.tags.type !== 'multipolygon') continue;
+    const outer = rel.members.filter((m) => m.type === 'way' && m.role !== 'inner').map((m) => ways.get(m.ref)).filter(Boolean);
+    for (const ring of assembleRings(outer)) pushBuilding(ring, rel.tags);
+  }
 }
-for (const rel of relations) {
-  if (!rel.tags?.building || rel.tags.type !== 'multipolygon') continue;
-  const outer = rel.members.filter((m) => m.type === 'way' && m.role !== 'inner').map((m) => ways.get(m.ref)).filter(Boolean);
-  for (const ring of assembleRings(outer)) pushBuilding(ring, rel.tags);
+// OSM 건물 이름을 V-World 건물에 보태기 (V-World 이름이 비어 있을 때, 중심이 안에 들어오면)
+if (vworldRaw) {
+  const named = [];
+  for (const w of ways.values()) {
+    if (!w.tags?.building || !tagName(w.tags)) continue;
+    const ring = closedWayRing(w);
+    if (ring) named.push({ name: tagName(w.tags), c: ringCentroid(ring) });
+  }
+  const CELLN = 50;
+  const grid = new Map();
+  buildings.forEach((b, i) => { const c = ringCentroid(b.ring); const k = `${Math.floor(c[0] / CELLN)},${Math.floor(c[1] / CELLN)}`; (grid.get(k) ?? grid.set(k, []).get(k)).push(i); });
+  const inRingPt = (ring, x, z) => { let inside = false; for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) { const xi = ring[i], zi = ring[i + 1], xj = ring[j], zj = ring[j + 1]; if (zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside; } return inside; };
+  let filled = 0;
+  for (const n of named) {
+    for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) {
+      for (const i of grid.get(`${Math.floor(n.c[0] / CELLN) + di},${Math.floor(n.c[1] / CELLN) + dj}`) ?? []) {
+        if (!buildings[i].name && inRingPt(buildings[i].ring, n.c[0], n.c[1])) { buildings[i].name = n.name; filled++; }
+      }
+    }
+  }
+  console.log(`  OSM 이름으로 보완 ${filled}동`);
 }
 
 // ----- 물, 공원, 철도 -----
@@ -475,7 +535,8 @@ for (const n of osmNodes.values()) {
   }
   let added = 0;
   const STEP = 11;
-  for (let gx = minX + 8; gx < maxX - 8; gx += STEP) {
+  // V-World 가 있으면 전수 데이터라 보강이 필요 없다
+  for (let gx = vworldRaw ? maxX : minX + 8; gx < maxX - 8; gx += STEP) {
     for (let gz = minZ + 8; gz < maxZ - 8; gz += STEP) {
       const x = gx + (rnd() - 0.5) * 6;
       const z = gz + (rnd() - 0.5) * 6;
@@ -594,6 +655,10 @@ if (/\.json$/i.test(OUT)) {
     const p = nodes[n];
     tileOf(ti(p[0]), tj(p[1])).signals.push(n);
   }
+  for (const p of pois) {
+    const t = tileOf(ti(p.x), tj(p.z));
+    (t.pois ??= []).push({ x: Math.round(p.x * 10) / 10, z: Math.round(p.z * 10) / 10, kind: p.kind, sub: p.sub, name: p.name });
+  }
   const index = {
     origin: { lat: lat0, lon: lon0 },
     bbox,
@@ -605,7 +670,7 @@ if (/\.json$/i.test(OUT)) {
   let total = 0;
   for (const t of tiles.values()) {
     if (t.i < 0 || t.j < 0 || t.i >= ni || t.j >= nj) continue;
-    const data = { i: t.i, j: t.j, nodes: [...t.nodes].map(([id, p]) => [id, p[0], p[1]]), edges: t.edges, buildings: t.buildings, water: t.water, parks: t.parks, rails: t.rails, signals: t.signals };
+    const data = { i: t.i, j: t.j, nodes: [...t.nodes].map(([id, p]) => [id, p[0], p[1]]), edges: t.edges, buildings: t.buildings, water: t.water, parks: t.parks, rails: t.rails, signals: t.signals, pois: t.pois ?? [] };
     const file = `t/${t.i}_${t.j}.json`;
     const text = JSON.stringify(data);
     writeFileSync(`${OUT}/${file}`, text);

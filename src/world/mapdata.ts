@@ -55,9 +55,19 @@ export interface MapIndex {
   overview: { file: string; scale: number; w: number; h: number };
 }
 
+export interface PoiData {
+  x: number;
+  z: number;
+  kind: 'bus_stop' | 'station' | 'subway_entrance' | 'shop' | 'amenity' | 'tourism';
+  sub: string;
+  name: string;
+}
+
 export interface TileData {
   i: number;
   j: number;
+  /** OSM 정류장·역·상점 (없을 수 있음) */
+  pois?: PoiData[];
   /** [전역 번호, x, z] */
   nodes: Array<[number, number, number]>;
   edges: EdgeData[];

@@ -27,3 +27,7 @@ data/tiles/
 *.njsproj
 *.sln
 *.sw?
+data/pois/
+data/vworld/
+data/pois-*.json
+data/vworld-*.json

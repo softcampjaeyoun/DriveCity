@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mulberry32 } from '../util/math.ts';
-import { aptTextures, arrowTexture, billboardTexture, dongTexture, facadeSet, loadMerged, loadTex, signTexture, storefrontTextures, streetSignTexture, type MergedModel } from '../render/assets.ts';
+import { aptTextures, arrowTexture, billboardTexture, dongTexture, facadeSet, loadMerged, loadTex, shopNameTexture, signTexture, storefrontTextures, streetSignTexture, subwaySignTexture, SUB_KO, type MergedModel } from '../render/assets.ts';
 import { glowTexture, windowTexture } from '../render/textures.ts';
 import type { Node, RoadGraph } from './graph.ts';
 import type { BuildingData, MapIndex, TileData } from './mapdata.ts';
@@ -221,6 +221,33 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
     left: new THREE.MeshBasicMaterial({ map: arrowTexture('left'), transparent: true, depthWrite: false }),
     right: new THREE.MeshBasicMaterial({ map: arrowTexture('right'), transparent: true, depthWrite: false }),
     straightRight: new THREE.MeshBasicMaterial({ map: arrowTexture('straightRight'), transparent: true, depthWrite: false }),
+  };
+  /** 실제 상호·지하철 표지 텍스처 캐시 (타일을 넘어 공유, 너무 많아지면 비운다) */
+  const shopMats = new Map<string, THREE.MeshBasicMaterial>();
+  const shopSignMat = (name: string, sub: string) => {
+    const k = `${name}|${sub}`;
+    let m = shopMats.get(k);
+    if (!m) {
+      if (shopMats.size > 1500) {
+        for (const old of shopMats.values()) {
+          old.map?.dispose();
+          old.dispose();
+        }
+        shopMats.clear();
+      }
+      m = new THREE.MeshBasicMaterial({ map: shopNameTexture(name, sub), side: THREE.DoubleSide });
+      shopMats.set(k, m);
+    }
+    return m;
+  };
+  const subwayMats = new Map<string, THREE.MeshBasicMaterial>();
+  const subwayMat = (name: string) => {
+    let m = subwayMats.get(name);
+    if (!m) {
+      m = new THREE.MeshBasicMaterial({ map: subwaySignTexture(name), side: THREE.DoubleSide });
+      subwayMats.set(name, m);
+    }
+    return m;
   };
   /** 도로명 표지판 텍스처는 이름마다 하나 (타일을 넘어 공유) */
   const streetSignMats = new Map<string, THREE.MeshBasicMaterial>();
@@ -633,29 +660,49 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
     addInstanced(unitBox, hvacMat, hvacs);
     addInstanced(tankGeo, tankMat, tanks);
 
-    // ----- 버스 정류장 (큰길 인도, 350m 마다) -----
+    // ----- 버스 정류장: OSM 정류장 위치가 있으면 그 자리에, 없으면 큰길 350m 마다 -----
     {
       const shelters: Placement[] = [];
       const glass: Placement[] = [];
       const signs: Placement[] = [];
-      for (const e of edges) {
-        if (e.rank < 2 || e.rank > 3 || e.bridge || e.tunnel || e.link || e.len < 120) continue;
-        for (let s = 90; s < e.len - 40; s += 350) {
-          const p = g.pointAt(e, 1, s);
+      const placeShelter = (x: number, z: number, hx: number, hz: number, side: number) => {
+        const [rx, rz] = rightOf(hx, hz);
+        const yaw = Math.atan2(hx, hz);
+        shelters.push({ x, y: 2.6, z, yaw, w: 4.2, h: 0.12, d: 1.6 });
+        glass.push({ x: x + rx * side * 0.7, y: 1.35, z: z + rz * side * 0.7, yaw, w: 4.0, h: 2.4, d: 0.06 });
+        signs.push({ x: x - hx * 2.4, y: 2.2, z: z - hz * 2.4, yaw: yaw + Math.PI / 2, w: 0.9, h: 0.5, d: 0.08 });
+        for (const dx of [-1.9, 1.9]) {
+          const px = x + hx * dx;
+          const pz = z + hz * dx;
+          obstacles.push({ x: px, z: pz, r: 0.12 });
+          shelters.push({ x: px, y: 1.3, z: pz, yaw, w: 0.1, h: 2.6, d: 0.1 });
+        }
+      };
+      const stops = (tile.pois ?? []).filter((p) => p.kind === 'bus_stop');
+      if (stops.length) {
+        for (const st of stops) {
+          const hit = g.nearestEdge(st.x, st.z, 30);
+          if (!hit || hit.e.bridge || hit.e.tunnel) continue;
+          // 정류장은 도로 바깥 인도 위에. 길 어느 쪽인지는 POI 위치로
+          const p = g.pointAt(hit.e, 1, hit.s);
+          const side = hit.side >= 0 ? 1 : -1;
           const [rx, rz] = rightOf(p.hx, p.hz);
-          for (const side of e.lb > 0 ? [1, -1] : [1]) {
-            const x = p.x + rx * side * (e.half + 2.2);
-            const z = p.z + rz * side * (e.half + 2.2);
-            if (inBuilding(x, z)) continue;
-            const yaw = Math.atan2(p.hx, p.hz);
-            shelters.push({ x, y: 2.6, z, yaw, w: 4.2, h: 0.12, d: 1.6 });
-            glass.push({ x: x + rx * side * 0.7, y: 1.35, z: z + rz * side * 0.7, yaw, w: 4.0, h: 2.4, d: 0.06 });
-            signs.push({ x: x - p.hx * 2.4, y: 2.2, z: z - p.hz * 2.4, yaw: yaw + Math.PI / 2, w: 0.9, h: 0.5, d: 0.08 });
-            for (const dx of [-1.9, 1.9]) {
-              const px = x + p.hx * dx;
-              const pz = z + p.hz * dx;
-              obstacles.push({ x: px, z: pz, r: 0.12 });
-              shelters.push({ x: px, y: 1.3, z: pz, yaw, w: 0.1, h: 2.6, d: 0.1 });
+          const x = p.x + rx * side * (hit.e.half + 2.2);
+          const z = p.z + rz * side * (hit.e.half + 2.2);
+          if (inBuilding(x, z)) continue;
+          placeShelter(x, z, p.hx * side, p.hz * side, side);
+        }
+      } else {
+        for (const e of edges) {
+          if (e.rank < 2 || e.rank > 3 || e.bridge || e.tunnel || e.link || e.len < 120) continue;
+          for (let s = 90; s < e.len - 40; s += 350) {
+            const p = g.pointAt(e, 1, s);
+            const [rx, rz] = rightOf(p.hx, p.hz);
+            for (const side of e.lb > 0 ? [1, -1] : [1]) {
+              const x = p.x + rx * side * (e.half + 2.2);
+              const z = p.z + rz * side * (e.half + 2.2);
+              if (inBuilding(x, z)) continue;
+              placeShelter(x, z, p.hx, p.hz, side);
             }
           }
         }
@@ -663,6 +710,57 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
       addInstanced(unitBox, shelterMat, shelters);
       addInstanced(unitBox, shelterGlassMat, glass);
       addInstanced(unitBox, shelterSignMat, signs);
+    }
+
+    // ----- 실제 상호 간판·지하철 표지 (OSM POI) -----
+    {
+      const byName = new Map<string, Placement[]>();
+      const subway: Placement[] = [];
+      const subwayByName = new Map<string, Placement[]>();
+      const posts: Placement[] = [];
+      let count = 0;
+      for (const poi of tile.pois ?? []) {
+        if (poi.kind === 'station' || poi.kind === 'subway_entrance') {
+          const hit = g.nearestEdge(poi.x, poi.z, 40);
+          if (!hit) continue;
+          const p = g.pointAt(hit.e, 1, hit.s);
+          const side = hit.side >= 0 ? 1 : -1;
+          const [rx, rz] = rightOf(p.hx, p.hz);
+          const x = p.x + rx * side * (hit.e.half + 1.4);
+          const z = p.z + rz * side * (hit.e.half + 1.4);
+          const name = poi.name.replace(/\s*\d+번\s*출구$/, '');
+          const list = subwayByName.get(name) ?? [];
+          list.push({ x, y: 3.4, z, yaw: Math.atan2(p.hx, p.hz) + Math.PI / 2, w: 2.0, h: 1.0 });
+          subwayByName.set(name, list);
+          posts.push({ x, y: 1.6, z, yaw: 0, w: 0.1, h: 3.2, d: 0.1 });
+          obstacles.push({ x, z, r: 0.1 });
+          continue;
+        }
+        if ((poi.kind !== 'shop' && poi.kind !== 'amenity' && poi.kind !== 'tourism') || !poi.name || count >= 160) continue;
+        // 가게 위치에서 가장 가까운 길을 향해 간판을 세운다 (상가 띠 위, 3m 높이)
+        const hit = g.nearestEdge(poi.x, poi.z, 45);
+        if (!hit) continue;
+        const p = g.pointAt(hit.e, 1, hit.s);
+        const side = hit.side >= 0 ? 1 : -1;
+        const [rx, rz] = rightOf(p.hx, p.hz);
+        // 도로 가장자리에서 건물 쪽으로 0.3m: 건물 벽 바로 앞
+        const edgeD = hit.e.half + (hit.e.rank <= 4 ? 4.5 : 2.2);
+        const dist = Math.max(edgeD + 0.3, Math.min(hit.d, edgeD + 6));
+        const x = p.x + rx * side * dist;
+        const z = p.z + rz * side * dist;
+        const key = `${poi.name}|${SUB_KO[poi.sub] ?? ''}`;
+        const list = byName.get(key) ?? [];
+        list.push({ x, y: 3.1, z, yaw: Math.atan2(p.hx, p.hz), w: 3.2, h: 0.8 });
+        byName.set(key, list);
+        count++;
+      }
+      for (const [key, list] of byName) {
+        const [name, sub] = key.split('|');
+        addInstanced(plane, shopSignMat(name, sub), list);
+      }
+      for (const [name, list] of subwayByName) addInstanced(plane, subwayMat(name), list);
+      addInstanced(unitBox, poleMat, posts);
+      addInstanced(plane, shelterSignMat, subway);
     }
 
     // ----- 교차로 도로명 표지판 (교차하는 길 이름을 글씨로) -----
@@ -822,6 +920,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
     poolMat.opacity = k;
     haloMat.opacity = k;
     for (const m of allSignMats) m.color.setScalar(0.85 + 0.15 * k);
+    for (const m of shopMats.values()) m.color.setScalar(0.85 + 0.15 * k);
   };
   applyLook();
 

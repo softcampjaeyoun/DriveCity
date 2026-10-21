@@ -286,6 +286,66 @@ export function arrowTexture(kind: 'straight' | 'left' | 'right' | 'straightRigh
   return t;
 }
 
+/** 실제 상호 간판 (4:1). 이름 해시로 색을 정해 같은 가게는 늘 같은 색 */
+export function shopNameTexture(name: string, sub = ''): THREE.CanvasTexture {
+  let h = 7;
+  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  const [bg, fg] = SIGN_PALETTE[h % SIGN_PALETTE.length];
+  const [c, g] = canvas(512, 128);
+  g.fillStyle = bg;
+  g.fillRect(0, 0, 512, 128);
+  g.strokeStyle = 'rgba(0,0,0,0.25)';
+  g.lineWidth = 6;
+  g.strokeRect(3, 3, 506, 122);
+  g.fillStyle = fg;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  const text = name.length > 12 ? name.slice(0, 12) : name;
+  g.font = `${text.length > 8 ? 44 : text.length > 5 ? 56 : 66}px ${BOLD}`;
+  g.fillText(text, 256, sub ? 54 : 64);
+  if (sub) {
+    g.font = `22px ${KFONT}`;
+    g.fillStyle = fg + 'cc';
+    g.fillText(sub, 256, 104);
+  }
+  const t = toTex(c);
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  return t;
+}
+
+/** 지하철 출입구·역 표지 (초록 바탕, 2:1) */
+export function subwaySignTexture(name: string): THREE.CanvasTexture {
+  const [c, g] = canvas(256, 128);
+  g.fillStyle = '#1b7f4a';
+  g.fillRect(0, 0, 256, 128);
+  g.fillStyle = '#ffffff';
+  g.beginPath();
+  g.arc(40, 64, 24, 0, Math.PI * 2);
+  g.fill();
+  g.fillStyle = '#1b7f4a';
+  g.font = `bold 30px ${KFONT}`;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText('M', 40, 65);
+  g.fillStyle = '#ffffff';
+  g.textAlign = 'left';
+  g.font = `${name.length > 5 ? 30 : 38}px ${BOLD}`;
+  g.fillText(name || '지하철', 76, 64);
+  const t = toTex(c);
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  return t;
+}
+
+/** 업종 영문 태그 → 한글 */
+export const SUB_KO: Record<string, string> = {
+  convenience: '편의점', supermarket: '마트', bakery: '베이커리', clothes: '의류', hairdresser: '미용실', beauty: '뷰티', cafe: '카페', restaurant: '음식점', fast_food: '패스트푸드',
+  pharmacy: '약국', bank: '은행', hospital: '병원', clinic: '의원', dentist: '치과', school: '학교', kindergarten: '유치원', university: '대학교', library: '도서관', police: '경찰서',
+  fire_station: '소방서', post_office: '우체국', cinema: '영화관', theatre: '극장', pub: '호프', bar: '바', fuel: '주유소', parking: '주차장', bus_station: '버스터미널', marketplace: '시장',
+  community_centre: '주민센터', townhall: '구청', place_of_worship: '교회', veterinary: '동물병원', mobile_phone: '휴대폰', electronics: '전자제품', jewelry: '보석', optician: '안경',
+  books: '서점', stationery: '문구', furniture: '가구', car: '자동차', car_repair: '정비', florist: '꽃집', butcher: '정육점', alcohol: '주류', chemist: '드러그스토어', cosmetics: '화장품',
+  department_store: '백화점', mall: '쇼핑몰', hotel: '호텔', museum: '박물관', attraction: '명소', gym: '헬스', fitness_centre: '헬스', laundry: '세탁', travel_agency: '여행사',
+};
+
 /** 도로명 표지판 (초록 바탕 흰 글씨, 4:1) */
 export function streetSignTexture(name: string): THREE.CanvasTexture {
   const [c, g] = canvas(512, 128);

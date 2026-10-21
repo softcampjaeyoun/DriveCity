@@ -52,6 +52,18 @@ npm run map:build -- data/osm-raw.json public/map/seoul   # 1km 타일 + index.j
 
 넓은 영역은 미러별로 병렬로 받을 수 있어요: `TILE_SHARD=0/3`, `1/3`, `2/3` 으로 세 프로세스를 띄운 뒤, 다 끝나면 shard 없이 한 번 더 실행해 합쳐요. 받은 타일은 `data/tiles/<bbox>/` 에 남아 이어받아요. 사내망처럼 인증서 폐기 확인이 막힌 곳을 위해 `curl --ssl-no-revoke` 로 받아요.
 
+### 더 실제에 가깝게 (선택)
+
+같은 bbox 로 아래를 받아 두면 `map:build` 가 자동으로 읽어요.
+
+```bash
+node tools/fetch-pois.mjs 37.44 126.95 37.575 127.18          # OSM 버스 정류장·지하철역·상점·편의시설 → data/pois-<bbox>.json
+VWORLD_KEY=발급키 node tools/fetch-vworld.mjs 37.44 126.95 37.575 127.18   # 국토부 건물통합정보(층수·이름·전수 폴리곤) → data/vworld-<bbox>.json
+```
+
+- POI 가 있으면 버스 정류장이 실제 위치에 서고, 가게 앞에 실제 상호 간판이 붙고, 지하철 출입구 표지가 생겨요.
+- V-World 건물이 있으면 OSM 건물·보강 건물 대신 전수 건물 폴리곤을 쓰고 층수로 높이를 정해요. 키는 [vworld.kr](https://www.vworld.kr) 에서 무료 발급(오픈API 인증키). 키는 환경변수로만 쓰고 저장소에 넣지 마세요.
+
 ## 교통
 
 - 승용차 20, 택시 7, 간선·지선·마을·광역버스 7, 경찰 4, 라이벌 3.
