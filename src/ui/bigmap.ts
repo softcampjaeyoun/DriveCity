@@ -208,8 +208,14 @@ export function createBigMap(root: HTMLElement, g: RoadGraph, placeOf: (x: numbe
       ctx.font = '600 13px "IBM Plex Sans KR", sans-serif';
       ctx.fillStyle = 'rgba(233,237,246,0.85)';
       ctx.textAlign = 'center';
+      // 지명이 겹치면 먼저 그린 것만 남긴다 (전체 보기에서 동 이름이 뭉치지 않게)
+      const drawn: { x: number; z: number; w: number }[] = [];
       for (const p of g.index.places) {
         const [x, z] = toView(p.x, p.z);
+        if (x < -40 || z < -10 || x > canvas.width + 40 || z > canvas.height + 10) continue;
+        const w = ctx.measureText(p.name).width + 8;
+        if (drawn.some((d) => Math.abs(d.z - z) < 15 && Math.abs(d.x - x) < (d.w + w) / 2)) continue;
+        drawn.push({ x, z, w });
         ctx.fillText(p.name, x, z);
       }
       // 확대 시 도로 이름
