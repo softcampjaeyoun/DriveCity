@@ -13,7 +13,6 @@ const BOX = { x: 70, y: 36, z: 70 };
 
 /** 비: 카메라 주위 상자 안에서 떨어지는 빗줄기 + 짙은 안개 + 젖은 노면. 2~3분마다 바뀐다 */
 export function createWeather(scene: THREE.Scene, city: City, toast: (big: string, sub: string) => void): Weather {
-  const fog = scene.fog as THREE.FogExp2;
   const pos = new Float32Array(DROPS * 6);
   const vel = new Float32Array(DROPS);
   for (let i = 0; i < DROPS; i++) {
@@ -39,7 +38,6 @@ export function createWeather(scene: THREE.Scene, city: City, toast: (big: strin
     raining = on;
     rain.visible = on;
     city.setWet(on);
-    fog.density = on ? 0.008 : 0.0045;
     if (announce) toast(on ? '비가 내리기 시작했어요' : '비가 그쳤어요', on ? '노면이 미끄러워요. 조심하세요' : '');
   };
 

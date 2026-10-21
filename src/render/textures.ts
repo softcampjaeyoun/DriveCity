@@ -39,6 +39,31 @@ export function windowTexture(seed: number, warm = 0.78): THREE.CanvasTexture {
   return t;
 }
 
+/** 낮에 보이는 외벽. windowTexture 와 같은 격자라 같은 UV 를 쓴다. glass 는 유리 커튼월 */
+export function facadeTexture(seed: number, glass = false): THREE.CanvasTexture {
+  const r = mulberry32(seed + 7);
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 256;
+  const g = c.getContext('2d')!;
+  g.fillStyle = glass ? '#7f93ad' : `hsl(${28 + r() * 20}, ${6 + r() * 8}%, ${58 + r() * 14}%)`;
+  g.fillRect(0, 0, 128, 256);
+  for (let row = 0; row < 16; row++) {
+    for (let col = 0; col < 8; col++) {
+      g.fillStyle = glass ? `hsl(${205 + r() * 15}, 30%, ${34 + r() * 14}%)` : `hsl(${210 + r() * 20}, 22%, ${26 + r() * 12}%)`;
+      g.fillRect(col * 16 + 3, row * 16 + 4, 10, 9);
+    }
+    if (!glass) {
+      // 층 사이 띠
+      g.fillStyle = 'rgba(0,0,0,0.08)';
+      g.fillRect(0, row * 16 + 14, 128, 1);
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
 /** 라이벌 머리 위 이름표 스프라이트 */
 export function nameTag(text: string, color: string): THREE.Sprite {
   const c = document.createElement('canvas');

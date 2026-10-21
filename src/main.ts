@@ -10,6 +10,7 @@ import { addCredits, addXp, levelInfo, persist, save } from './game/save.ts';
 import { CHASE_PACE, createWanted } from './game/wanted.ts';
 import { IDLE, createInput } from './input.ts';
 import { createRadio, type Radio } from './radio.ts';
+import { createDaylight } from './render/daylight.ts';
 import { createStage } from './render/scene.ts';
 import { createWeather } from './render/weather.ts';
 import { createGarage } from './ui/garage.ts';
@@ -47,6 +48,7 @@ const chase = createChaseCamera(camera, (x, z, r) => world.push({ x, z, r }));
 const input = createInput();
 const marker = createMarker(scene, COLOR.run);
 const weather = createWeather(scene, city, (b, s) => hud.toast(b, s, 2.4));
+const daylight = createDaylight(stage, (n) => city.setNight(n));
 stage.setBloom(save.settings.fx);
 
 let started = false;
@@ -133,6 +135,10 @@ input.on('fx', () => {
 });
 input.on('cancel', () => missions.cancel());
 input.on('weather', () => weather.toggle());
+input.on('time', () => {
+  daylight.skip(4);
+  toast(`시간 ${daylight.label}`, '', 1);
+});
 goBtn.addEventListener('click', begin);
 
 function begin(): void {
@@ -189,7 +195,7 @@ function checkRedLight(): void {
 // debugCam 을 채우면 추적 카메라 대신 그 위치에서 본다 (항공 샷)
 const dbg = { debugCam: null as null | { x: number; y: number; z: number; lx: number; lz: number } };
 if (import.meta.env.DEV) {
-  (window as unknown as { __dc: unknown }).__dc = { player, traffic, battle, run, garage, save, graph, signals, wanted, missions, weather, map, dbg, scene, world, camera };
+  (window as unknown as { __dc: unknown }).__dc = { player, traffic, battle, run, garage, save, graph, signals, wanted, missions, weather, map, dbg, scene, world, camera, daylight };
 }
 
 // ----- 루프 -----
@@ -220,6 +226,7 @@ function frame(now: number): void {
   const bt = battle.update(S);
   run.update(now, S);
   weather.update(dt, camera);
+  daylight.update(dt, weather.raining);
 
   // 목표 지점: 미션 > 배틀 결승 > 타임어택 체크포인트
   const mt = missions.target;
@@ -271,7 +278,7 @@ function frame(now: number): void {
     drift: player.driftTimer > 0 && player.driftScore > 5 ? player.driftScore : null,
     carName: carSpec.name,
     carLv,
-    status: started ? `${weather.raining ? '비' : '맑음'} · 라디오 ${radio?.name ?? '꺼짐'} · 효과 ${stage.bloom ? '켬' : '끔'}` : '',
+    status: started ? `${daylight.label} · ${weather.raining ? '비' : '맑음'} · 라디오 ${radio?.name ?? '꺼짐'} · 효과 ${stage.bloom ? '켬' : '끔'}` : '',
   });
   hud.tick(dt);
   const extra: MapPoint[] = missions.spots.filter((sp) => sp.cool <= 0 && !missions.active).map((sp) => ({ x: sp.x, z: sp.z, color: hex(COLOR.mission), r: 3.5 }));

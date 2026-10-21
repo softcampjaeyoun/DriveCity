@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mulberry32 } from '../util/math.ts';
-import { glowTexture, windowTexture } from '../render/textures.ts';
+import { facadeTexture, glowTexture, windowTexture } from '../render/textures.ts';
 import { LANE_W, type Node, type RoadGraph } from './graph.ts';
 import type { MapData } from './mapdata.ts';
 import { pointInRing } from './collision.ts';
@@ -11,7 +11,11 @@ export interface City {
   update(t: number): void;
   /** 비가 올 때 노면을 젖은 느낌으로 */
   setWet(wet: boolean): void;
+  /** 0 낮 .. 1 밤. 재질 색과 창문·가로등·네온 밝기를 바꾼다 */
+  setNight(night: number): void;
 }
+
+const mixHex = (mat: { color: THREE.Color }, day: number, night: number, k: number) => mat.color.setHex(day).lerp(new THREE.Color(night), k);
 
 const NEON = [0xff4fd8, 0x4fd1ff, 0xffe14f, 0x5ce09a, 0xff8a3c, 0xf4f6ff, 0xb45cff];
 
@@ -158,7 +162,9 @@ export function buildCity(scene: THREE.Scene, map: MapData, g: RoadGraph, isSign
     t.repeat.set(60, 60);
     return t;
   })();
-  const waterMat = new THREE.MeshPhongMaterial({ color: 0x1a3a66, emissive: 0x0f2a52, shininess: 90, specular: 0x8aa8d8, bumpMap: ripple, bumpScale: 0.6 });
+  // 폴리곤 삼각분할 방향이 제각각이라 평면 재질은 양면으로
+  const waterMat = new THREE.MeshPhongMaterial({ color: 0x1a3a66, emissive: 0x0f2a52, shininess: 90, specular: 0x8aa8d8, bumpMap: ripple, bumpScale: 0.6, side: THREE.DoubleSide });
+  const parkMat = new THREE.MeshLambertMaterial({ color: 0x15261c, side: THREE.DoubleSide });
   {
     const wb = new GeoBuilder();
     for (const ring of map.water) flatPolygon(wb, ring, 0.04);
@@ -169,10 +175,10 @@ export function buildCity(scene: THREE.Scene, map: MapData, g: RoadGraph, isSign
     } else console.warn('[city] 물 폴리곤을 삼각분할하지 못했어요');
     const pb = new GeoBuilder();
     for (const ring of map.parks) flatPolygon(pb, ring, 0.03);
-    if (!pb.empty) scene.add(new THREE.Mesh(pb.build(), new THREE.MeshLambertMaterial({ color: 0x15261c })));
+    if (!pb.empty) scene.add(new THREE.Mesh(pb.build(), parkMat));
     const rb = new GeoBuilder();
     for (const pts of map.rails) ribbon(rb, pts, 2.4, 0.012);
-    if (!rb.empty) scene.add(new THREE.Mesh(rb.build(), new THREE.MeshLambertMaterial({ color: 0x23262e })));
+    if (!rb.empty) scene.add(new THREE.Mesh(rb.build(), new THREE.MeshLambertMaterial({ color: 0x23262e, side: THREE.DoubleSide })));
   }
 
   // 건물 AABB 격자: 가로수·간판이 건물 안에 들어가지 않게
@@ -194,6 +200,9 @@ export function buildCity(scene: THREE.Scene, map: MapData, g: RoadGraph, isSign
   };
 
   // ----- 도로 띠, 인도, 다리 -----
+  let roadMat: THREE.MeshPhongMaterial;
+  const walkMat = new THREE.MeshLambertMaterial({ color: 0x262a35 });
+  const deckMat = new THREE.MeshLambertMaterial({ color: 0x1c1f28 });
   {
     const rb = new GeoBuilder();
     const sb = new GeoBuilder();
@@ -205,10 +214,10 @@ export function buildCity(scene: THREE.Scene, map: MapData, g: RoadGraph, isSign
         if (!e.tunnel) ribbon(sb, e.pts, e.half + (e.rank <= 4 ? 4.5 : 2.2), 0.012);
       }
     }
-    const roadMat = new THREE.MeshPhongMaterial({ color: 0x15171e, shininess: 10, specular: 0x14161c });
-    scene.add(new THREE.Mesh(sb.build(), new THREE.MeshLambertMaterial({ color: 0x262a35 })));
+    roadMat = new THREE.MeshPhongMaterial({ color: 0x15171e, shininess: 10, specular: 0x14161c });
+    scene.add(new THREE.Mesh(sb.build(), walkMat));
     scene.add(new THREE.Mesh(rb.build(), roadMat));
-    if (!bb.empty) scene.add(new THREE.Mesh(bb.build(), new THREE.MeshLambertMaterial({ color: 0x1c1f28 })));
+    if (!bb.empty) scene.add(new THREE.Mesh(bb.build(), deckMat));
     // 다리 난간
     const rails: Array<[number, number, number]> = [];
     for (const e of g.edges) {
@@ -298,8 +307,8 @@ export function buildCity(scene: THREE.Scene, map: MapData, g: RoadGraph, isSign
   }
 
   // ----- 건물 -----
-  const warmMats = [1, 2, 3].map((s) => new THREE.MeshLambertMaterial({ color: 0x1b1f2b, emissive: 0xffffff, emissiveMap: windowTexture(s * 97) }));
-  const coolMats = [4, 5].map((s) => new THREE.MeshLambertMaterial({ color: 0x151a26, emissive: 0xffffff, emissiveMap: windowTexture(s * 131, 0.3) }));
+  const warmMats = [1, 2, 3].map((s) => new THREE.MeshLambertMaterial({ color: 0x1b1f2b, map: facadeTexture(s * 97), emissive: 0xffffff, emissiveMap: windowTexture(s * 97) }));
+  const coolMats = [4, 5].map((s) => new THREE.MeshLambertMaterial({ color: 0x151a26, map: facadeTexture(s * 131, true), emissive: 0xffffff, emissiveMap: windowTexture(s * 131, 0.3) }));
   const roofMat = new THREE.MeshLambertMaterial({ color: 0x15171f, side: THREE.DoubleSide });
   const beaconMat = new THREE.MeshBasicMaterial({ color: 0xff3040 });
   const signs: Array<{ x: number; y: number; z: number; w: number; h: number; rot: number; color: number }> = [];
@@ -372,8 +381,9 @@ export function buildCity(scene: THREE.Scene, map: MapData, g: RoadGraph, isSign
     });
     scene.add(bm);
   }
+  const signMat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
   if (signs.length) {
-    const signMesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide }), signs.length);
+    const signMesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), signMat, signs.length);
     const col = new THREE.Color();
     signs.forEach((s, i) => {
       dummy.position.set(s.x, s.y, s.z);
@@ -389,6 +399,7 @@ export function buildCity(scene: THREE.Scene, map: MapData, g: RoadGraph, isSign
   }
 
   // ----- 공원 나무, 큰길 가로수 -----
+  const crownMat = new THREE.MeshLambertMaterial({ color: 0x1d3a26 });
   {
     const trees: Array<[number, number, number]> = [];
     for (const e of g.edges) {
@@ -420,7 +431,7 @@ export function buildCity(scene: THREE.Scene, map: MapData, g: RoadGraph, isSign
     }
     if (trees.length) {
       const trunk = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.25, 0.3, 2, 6), new THREE.MeshLambertMaterial({ color: 0x2b2018 }), trees.length);
-      const crown = new THREE.InstancedMesh(new THREE.ConeGeometry(1.9, 4.5, 7), new THREE.MeshLambertMaterial({ color: 0x1d3a26 }), trees.length);
+      const crown = new THREE.InstancedMesh(new THREE.ConeGeometry(1.9, 4.5, 7), crownMat, trees.length);
       trees.forEach(([x, z, s], i) => {
         dummy.scale.set(s, s, s);
         dummy.position.set(x, 1.25 * s, z);
@@ -436,6 +447,8 @@ export function buildCity(scene: THREE.Scene, map: MapData, g: RoadGraph, isSign
   }
 
   // ----- 가로등 -----
+  let poolMat: THREE.MeshBasicMaterial;
+  let haloMat: THREE.PointsMaterial;
   {
     const lamps: Array<{ x: number; z: number; dx: number; dz: number }> = [];
     for (const e of g.edges) {
@@ -450,11 +463,8 @@ export function buildCity(scene: THREE.Scene, map: MapData, g: RoadGraph, isSign
       }
     }
     const poleMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.12, 0.16, 7.5, 6), new THREE.MeshLambertMaterial({ color: 0x30343f }), lamps.length);
-    const poolMesh = new THREE.InstancedMesh(
-      new THREE.PlaneGeometry(17, 17).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ map: glowTexture('rgba(255,170,80,0.42)'), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }),
-      lamps.length,
-    );
+    poolMat = new THREE.MeshBasicMaterial({ map: glowTexture('rgba(255,170,80,0.42)'), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+    const poolMesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(17, 17).rotateX(-Math.PI / 2), poolMat, lamps.length);
     const haloPos = new Float32Array(lamps.length * 3);
     lamps.forEach((l, i) => {
       dummy.position.set(l.x, 3.75, l.z);
@@ -467,22 +477,55 @@ export function buildCity(scene: THREE.Scene, map: MapData, g: RoadGraph, isSign
     });
     const haloGeo = new THREE.BufferGeometry();
     haloGeo.setAttribute('position', new THREE.BufferAttribute(haloPos, 3));
-    const halos = new THREE.Points(
-      haloGeo,
-      new THREE.PointsMaterial({ size: 7, map: glowTexture('rgba(255,190,110,1)'), color: 0xffb35c, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }),
-    );
+    haloMat = new THREE.PointsMaterial({ size: 7, map: glowTexture('rgba(255,190,110,1)'), color: 0xffb35c, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+    const halos = new THREE.Points(haloGeo, haloMat);
     scene.add(poleMesh, poolMesh, halos);
   }
+
+  let wet = false;
+  let night = 1;
+  const applyLook = () => {
+    const k = night;
+    const wetK = wet ? 0.7 : 1;
+    mixHex(groundMat, 0x7a7d86, 0x1b1d24, k).multiplyScalar(wetK);
+    groundMat.shininess = wet ? 70 : 8;
+    groundMat.specular.setHex(wet ? 0x4a5670 : 0x111318);
+    mixHex(roadMat, 0x3c3f47, 0x15171e, k).multiplyScalar(wetK);
+    mixHex(walkMat, 0x8d9099, 0x262a35, k);
+    mixHex(deckMat, 0x4a4e58, 0x1c1f28, k);
+    mixHex(parkMat, 0x4f8a4a, 0x15261c, k);
+    mixHex(crownMat, 0x3f8a4a, 0x1d3a26, k);
+    mixHex(roofMat, 0x6e7079, 0x15171f, k);
+    // 낮엔 외벽 텍스처가 보이고(흰색 곱), 밤엔 어둡게 눌리고 창문 불빛(emissive)이 켜진다
+    for (const m of warmMats) {
+      mixHex(m, 0xffffff, 0x2a2e3a, k);
+      m.emissive.setScalar(k);
+    }
+    for (const m of coolMats) {
+      mixHex(m, 0xffffff, 0x222838, k);
+      m.emissive.setScalar(k);
+    }
+    mixHex(waterMat, 0x3d7bb5, 0x1a3a66, k);
+    waterMat.emissive.setHex(0x0f2a52).multiplyScalar(k);
+    poolMat.opacity = k;
+    haloMat.opacity = k;
+    signMat.color.setScalar(0.35 + 0.65 * k);
+    beaconMat.visible = true;
+  };
+  applyLook();
 
   return {
     update(t) {
       beaconMat.color.setHex(Math.sin(t * 3) > 0 ? 0xff3040 : 0x330408);
       ripple.offset.set(t * 0.012, t * 0.008);
     },
-    setWet(wet) {
-      groundMat.shininess = wet ? 70 : 8;
-      groundMat.specular.setHex(wet ? 0x4a5670 : 0x111318);
-      groundMat.color.setHex(wet ? 0x13151b : 0x1b1d24);
+    setWet(w) {
+      wet = w;
+      applyLook();
+    },
+    setNight(n) {
+      night = n;
+      applyLook();
     },
   };
 }

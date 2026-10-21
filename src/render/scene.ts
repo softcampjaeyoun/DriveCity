@@ -7,8 +7,12 @@ export interface Stage {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
+  hemi: THREE.HemisphereLight;
+  moon: THREE.DirectionalLight;
   render(): void;
   setBloom(on: boolean): void;
+  setBloomStrength(v: number): void;
+  setSky(top: THREE.Color, horizon: THREE.Color): void;
   readonly bloom: boolean;
 }
 
@@ -17,27 +21,26 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
   renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
 
   const scene = new THREE.Scene();
-  // 지평선은 도시 불빛이 번진 보랏빛, 위로 갈수록 어두운 남색. 안개색은 지평선색과 맞춘다
+  // 지평선은 도시 불빛이 번진 보랏빛, 위로 갈수록 어두운 남색. 안개색은 지평선색과 맞춘다. 낮·밤은 daylight 가 바꾼다
   const HORIZON = 0x161528;
   scene.background = new THREE.Color(HORIZON);
   scene.fog = new THREE.FogExp2(HORIZON, 0.0045);
-  const sky = new THREE.Mesh(
-    new THREE.SphereGeometry(2400, 24, 12),
-    new THREE.ShaderMaterial({
-      side: THREE.BackSide,
-      depthWrite: false,
-      fog: false,
-      uniforms: { top: { value: new THREE.Color(0x05070f) }, horizon: { value: new THREE.Color(HORIZON) } },
-      vertexShader: 'varying float vy; void main(){ vy = normalize(position).y; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-      fragmentShader: 'uniform vec3 top; uniform vec3 horizon; varying float vy; void main(){ float t = smoothstep(-0.05, 0.45, vy); gl_FragColor = vec4(mix(horizon, top, t), 1.0); }',
-    }),
-  );
+  const skyMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    fog: false,
+    uniforms: { top: { value: new THREE.Color(0x05070f) }, horizon: { value: new THREE.Color(HORIZON) } },
+    vertexShader: 'varying float vy; void main(){ vy = normalize(position).y; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: 'uniform vec3 top; uniform vec3 horizon; varying float vy; void main(){ float t = smoothstep(-0.05, 0.45, vy); gl_FragColor = vec4(mix(horizon, top, t), 1.0); }',
+  });
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(2400, 24, 12), skyMat);
   sky.name = 'sky';
   scene.add(sky);
 
   const camera = new THREE.PerspectiveCamera(62, 1, 0.1, 2600);
 
-  scene.add(new THREE.HemisphereLight(0x5a6cc8, 0x1a1208, 0.75));
+  const hemi = new THREE.HemisphereLight(0x5a6cc8, 0x1a1208, 0.75);
+  scene.add(hemi);
   const moon = new THREE.DirectionalLight(0x9fb4ff, 0.4);
   moon.position.set(-120, 200, 80);
   scene.add(moon);
@@ -63,6 +66,8 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
     renderer,
     scene,
     camera,
+    hemi,
+    moon,
     get bloom() {
       return bloom;
     },
@@ -73,6 +78,13 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
     },
     setBloom(on) {
       bloom = on;
+    },
+    setBloomStrength(v) {
+      bloomPass.strength = v;
+    },
+    setSky(top, horizon) {
+      (skyMat.uniforms.top.value as THREE.Color).copy(top);
+      (skyMat.uniforms.horizon.value as THREE.Color).copy(horizon);
     },
   };
 }
