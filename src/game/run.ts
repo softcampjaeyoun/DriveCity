@@ -34,7 +34,8 @@ export function createRun(g: RoadGraph, ev: RunEvents): Run {
   function pickTarget(S: PlayerState): void {
     let tries = 0;
     let n = g.randomNode();
-    while (Math.hypot(g.pos(n)[0] - S.x, g.pos(n)[1] - S.z) < 170 && tries++ < 50) n = g.randomNode();
+    const far = () => Math.hypot(g.pos(n)[0] - S.x, g.pos(n)[1] - S.z);
+    while ((far() < 220 || far() > 900) && tries++ < 60) n = g.randomNode();
     [tx, tz] = g.pos(n);
   }
 
@@ -67,7 +68,7 @@ export function createRun(g: RoadGraph, ev: RunEvents): Run {
     update(now, S) {
       if (!active || pausedAt) return;
       time = (now - startAt) / 1000;
-      if (Math.hypot(tx - S.x, tz - S.z) >= 9) return;
+      if (Math.hypot(tx - S.x, tz - S.z) >= 10) return;
       cp++;
       if (cp < CHECKPOINTS) {
         ev.toast(`체크포인트 ${cp} / ${CHECKPOINTS}`, fmtTime(time), 1.2);

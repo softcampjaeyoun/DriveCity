@@ -36,7 +36,7 @@ export const KINDS: Record<KindId, VehicleKind> = {
   rival: { id: 'rival', name: '라이벌', length: 4.3, width: 1.9, cruise: [13, 13], turnSpeed: 15, colors: [] },
   police: { id: 'police', name: '경찰', length: 4.4, width: 1.9, cruise: [10, 14], turnSpeed: 8, colors: [0xf1f3f7], models: ['police'] },
 };
-export const POLICE_COUNT = 4;
+export const POLICE_COUNT = 3;
 
 /** 교통 차량 구성. 합계가 전체 대수 */
 export const TRAFFIC_MIX: ReadonlyArray<[KindId, number]> = [

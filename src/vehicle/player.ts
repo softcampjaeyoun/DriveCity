@@ -3,7 +3,7 @@ import { reduceMotion } from '../config.ts';
 import type { Input } from '../input.ts';
 import { glowTexture } from '../render/textures.ts';
 import { clamp } from '../util/math.ts';
-import type { Box } from '../world/city.ts';
+import type { CollisionWorld } from '../world/collision.ts';
 import type { RoadGraph } from '../world/graph.ts';
 import { swapModel } from './models.ts';
 import type { CarStats } from './stats.ts';
@@ -36,7 +36,7 @@ export interface Player {
   group: THREE.Group;
   driftScore: number;
   driftTimer: number;
-  step(dt: number, inp: Input, stats: CarStats, colliders: Box[], after: () => void): StepResult;
+  step(dt: number, inp: Input, stats: CarStats, world: CollisionWorld, after: () => void): StepResult;
   applyVisual(r: StepResult, inp: Input, dt: number): void;
   setPaint(hex: string): void;
   setGlow(hex: string): void;
@@ -56,8 +56,21 @@ export const PROBE: readonly number[] = [1.3, -1.3];
 export const RADIUS = 1.15;
 
 export function createPlayer(scene: THREE.Scene, g: RoadGraph): Player {
-  const S: PlayerState = { x: 0, z: 0, h: 0, vx: 0, vz: 0, steer: 0, nitro: 0.6, shake: 0, wheelSpin: 0 };
-  const bounds = { minX: g.minX + 1.3, maxX: g.maxX - 1.3, minZ: g.minZ + 1.3, maxZ: g.maxZ - 1.3 };
+  const [sx, sz] = g.pos(g.start);
+  const S: PlayerState = { x: sx, z: sz, h: 0, vx: 0, vz: 0, steer: 0, nitro: 0.6, shake: 0, wheelSpin: 0 };
+  const bounds = { minX: g.bbox.minX + 1.3, maxX: g.bbox.maxX - 1.3, minZ: g.bbox.minZ + 1.3, maxZ: g.bbox.maxZ - 1.3 };
+  // 시작 교차로에서 큰길 방향을 보고 차선 위에 놓는다
+  {
+    const edges = g.edgesAt(g.start).slice().sort((a, b) => a.rank - b.rank);
+    const e = edges[0];
+    if (e) {
+      const dir = e.a === g.start ? 1 : -1;
+      const p = g.pointAt(e, g.canTravel(e, dir) ? dir : ((dir * -1) as 1 | -1), Math.min(e.len * 0.5, g.cut(e, g.start) + 8));
+      S.x = p.x - p.hz * g.laneOffset(e, 1, 0);
+      S.z = p.z + p.hx * g.laneOffset(e, 1, 0);
+      S.h = Math.atan2(p.hx, p.hz);
+    }
+  }
   const skids = createSkids(scene);
 
   // ----- 모델 -----
@@ -136,55 +149,28 @@ export function createPlayer(scene: THREE.Scene, g: RoadGraph): Player {
   group.add(headLight, headLight.target);
   scene.add(group);
 
-  // ----- 충돌 (빌딩, 나무, 맵 경계) -----
-  function collide(colliders: Box[]): void {
+  // ----- 충돌 (건물 폴리곤, 물, 맵 경계) -----
+  function collide(world: CollisionWorld): void {
     const fx = Math.sin(S.h);
     const fz = Math.cos(S.h);
     let hit = 0;
     for (const off of PROBE) {
-      for (const b of colliders) {
-        const px = S.x + fx * off;
-        const pz = S.z + fz * off;
-        if (px < b.minX - RADIUS || px > b.maxX + RADIUS || pz < b.minZ - RADIUS || pz > b.maxZ + RADIUS) continue;
-        if (b.water) {
-          if (px > b.minX && px < b.maxX && pz > b.minZ && pz < b.maxZ) player.fell = true;
-          continue;
-        }
-        const cx = clamp(px, b.minX, b.maxX);
-        const cz = clamp(pz, b.minZ, b.maxZ);
-        let dx = px - cx;
-        let dz = pz - cz;
-        const d = Math.hypot(dx, dz);
-        if (d >= RADIUS) continue;
-        if (d < 1e-4) {
-          // 상자 안에 들어간 경우: 가장 가까운 면으로 밀어낸다
-          const pen = [
-            [px - b.minX, -1, 0],
-            [b.maxX - px, 1, 0],
-            [pz - b.minZ, 0, -1],
-            [b.maxZ - pz, 0, 1],
-          ].sort((a, c) => a[0] - c[0])[0];
-          dx = pen[1];
-          dz = pen[2];
-          S.x += dx * (pen[0] + RADIUS);
-          S.z += dz * (pen[0] + RADIUS);
-        } else {
-          const push = RADIUS - d;
-          dx /= d;
-          dz /= d;
-          S.x += dx * push;
-          S.z += dz * push;
-        }
-        const vn = S.vx * dx + S.vz * dz;
+      for (let iter = 0; iter < 2; iter++) {
+        const r = world.push({ x: S.x + fx * off, z: S.z + fz * off, r: RADIUS });
+        if (!r) break;
+        S.x += r.dx;
+        S.z += r.dz;
+        const vn = S.vx * r.nx + S.vz * r.nz;
         if (vn < 0) {
-          S.vx -= 1.25 * vn * dx;
-          S.vz -= 1.25 * vn * dz;
+          S.vx -= 1.25 * vn * r.nx;
+          S.vz -= 1.25 * vn * r.nz;
           S.vx *= 0.82;
           S.vz *= 0.82;
           hit = Math.max(hit, -vn);
         }
       }
     }
+    if (world.inWater(S.x, S.z)) player.fell = true;
     for (const axis of ['x', 'z'] as const) {
       const v = axis === 'x' ? 'vx' : 'vz';
       const lo = axis === 'x' ? bounds.minX : bounds.minZ;
@@ -208,7 +194,7 @@ export function createPlayer(scene: THREE.Scene, g: RoadGraph): Player {
     fell: false,
     crash: 0,
 
-    step(dt, inp, st, colliders, after) {
+    step(dt, inp, st, world, after) {
       player.fell = false;
       const fx = Math.sin(S.h);
       const fz = Math.cos(S.h);
@@ -249,7 +235,7 @@ export function createPlayer(scene: THREE.Scene, g: RoadGraph): Player {
       S.vz = fz * vf + lz * vl;
       S.x += S.vx * dt;
       S.z += S.vz * dt;
-      collide(colliders);
+      collide(world);
       after();
 
       const drifting = Math.abs(vl) > 3.2 && Math.abs(vf) > 8;
@@ -296,8 +282,16 @@ export function createPlayer(scene: THREE.Scene, g: RoadGraph): Player {
       swapModel(group, fallback, id);
     },
     reset() {
-      [S.x, S.z] = g.pos(g.nearest(S.x, S.z));
-      S.h = Math.round(S.h / (Math.PI / 2)) * (Math.PI / 2);
+      // 가장 가까운 길 위로, 그 길 방향을 보고
+      const hit = g.nearestEdge(S.x, S.z, 120);
+      if (hit) {
+        const dir = hit.side >= 0 ? 1 : -1;
+        const p = g.pointAt(hit.e, dir, dir === 1 ? hit.s : hit.e.len - hit.s);
+        const lat = g.laneOffset(hit.e, dir, 0);
+        S.x = p.x - p.hz * lat;
+        S.z = p.z + p.hx * lat;
+        S.h = Math.atan2(p.hx, p.hz);
+      } else [S.x, S.z] = g.pos(g.nearestNode(S.x, S.z));
       S.vx = S.vz = 0;
       S.steer = 0;
     },

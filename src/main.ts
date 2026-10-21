@@ -2,7 +2,7 @@ import './style.css';
 import { createTraffic } from './ai/traffic.ts';
 import { createAudio, type EngineAudio } from './audio.ts';
 import { createChaseCamera } from './camera.ts';
-import { EDGE, coarse } from './config.ts';
+import { coarse } from './config.ts';
 import { createBattle } from './game/battle.ts';
 import { createMissions } from './game/missions.ts';
 import { createRun } from './game/run.ts';
@@ -18,7 +18,9 @@ import { createMinimap, type MapPoint } from './ui/minimap.ts';
 import { createPlayer } from './vehicle/player.ts';
 import { CARS, computeStats, emptyParts, partsLevel, type CarSpec, type CarStats } from './vehicle/stats.ts';
 import { buildCity } from './world/city.ts';
+import { createCollisionWorld } from './world/collision.ts';
 import { buildGraph } from './world/graph.ts';
+import { loadMap } from './world/mapdata.ts';
 import { createMarker } from './world/markers.ts';
 import { createSignals } from './world/signals.ts';
 
@@ -26,17 +28,22 @@ if (coarse) document.documentElement.classList.add('coarse');
 
 const COLOR = { run: 0x4fd1ff, battle: 0xffae4a, mission: 0x5ce09a };
 const hex = (n: number) => `#${n.toString(16).padStart(6, '0')}`;
+const goBtn = document.getElementById('go') as HTMLButtonElement;
+goBtn.disabled = true;
+goBtn.textContent = '서울 지도를 불러오는 중…';
 
 const canvas = document.getElementById('view') as HTMLCanvasElement;
 const stage = createStage(canvas);
 const { scene, camera } = stage;
-const graph = buildGraph();
-const city = buildCity(scene, graph);
-const signals = createSignals(scene, graph);
-const player = createPlayer(scene, graph);
 const hud = createHud();
-const minimap = createMinimap(document.getElementById('minimap') as HTMLCanvasElement, graph);
-const chase = createChaseCamera(camera);
+const map = await loadMap();
+const graph = buildGraph(map);
+const signals = createSignals(scene, graph);
+const city = buildCity(scene, map, graph, signals.has);
+const world = createCollisionWorld(map, graph);
+const player = createPlayer(scene, graph);
+const minimap = createMinimap(document.getElementById('minimap') as HTMLCanvasElement, map, graph);
+const chase = createChaseCamera(camera, (x, z, r) => world.push({ x, z, r }));
 const input = createInput();
 const marker = createMarker(scene, COLOR.run);
 const weather = createWeather(scene, city, (b, s) => hud.toast(b, s, 2.4));
@@ -93,6 +100,8 @@ const garage = createGarage(document.getElementById('garage') as HTMLElement, {
   onClose: () => run.resume(),
 });
 hud.setBest(save.best);
+goBtn.disabled = false;
+goBtn.textContent = '출발';
 
 // ----- 입력 액션 -----
 const canOpenGarage = () => started && !battle.active && !missions.active && wanted.stars === 0 && Math.hypot(player.S.vx, player.S.vz) < 1.5;
@@ -124,7 +133,7 @@ input.on('fx', () => {
 });
 input.on('cancel', () => missions.cancel());
 input.on('weather', () => weather.toggle());
-document.getElementById('go')!.addEventListener('click', begin);
+goBtn.addEventListener('click', begin);
 
 function begin(): void {
   if (started) return;
@@ -147,25 +156,40 @@ function begin(): void {
 let insideNode = -1;
 function checkRedLight(): void {
   const S = player.S;
-  const n = graph.nearest(S.x, S.z);
+  const n = graph.nearestNode(S.x, S.z);
   const [nx, nz] = graph.pos(n);
-  const inside = Math.abs(S.x - nx) < EDGE && Math.abs(S.z - nz) < EDGE;
-  const key = n[0] * 100 + n[1];
+  let zone = 6;
+  for (const e of graph.edgesAt(n)) zone = Math.max(zone, graph.cut(e, n));
+  const inside = Math.hypot(S.x - nx, S.z - nz) < zone;
   if (!inside) {
-    if (insideNode === key) insideNode = -1;
+    if (insideNode === n) insideNode = -1;
     return;
   }
-  if (insideNode === key) return;
-  insideNode = key;
+  if (insideNode === n) return;
+  insideNode = n;
   const speed = Math.hypot(S.vx, S.vz);
-  if (speed < 4 || !signals.has(n[0], n[1])) return;
-  const d = Math.abs(S.vx) > Math.abs(S.vz) ? (S.vx > 0 ? 1 : 3) : S.vz > 0 ? 0 : 2;
-  if (signals.state(n, d) === 'red') wanted.add('redlight');
+  if (speed < 4 || !signals.has(n)) return;
+  // 진입한 길: 내 진행 방향과 가장 나란한 접근 간선
+  let best = null as null | { e: (typeof graph.edges)[number]; dir: 1 | -1 };
+  let bd = 0.5;
+  for (const e of graph.edgesAt(n)) {
+    const dir = graph.dirInto(e, n);
+    if (!graph.canTravel(e, dir)) continue;
+    const p = graph.pointAt(e, dir, e.len - 0.5);
+    const dot = (p.hx * S.vx + p.hz * S.vz) / speed;
+    if (dot > bd) {
+      bd = dot;
+      best = { e, dir };
+    }
+  }
+  if (best && signals.state(n, best.e, best.dir) === 'red') wanted.add('redlight');
 }
 
 // 개발 모드 디버그 훅. 브라우저 콘솔이나 자동 테스트에서 상태를 들여다볼 때 쓴다
+// debugCam 을 채우면 추적 카메라 대신 그 위치에서 본다 (항공 샷)
+const dbg = { debugCam: null as null | { x: number; y: number; z: number; lx: number; lz: number } };
 if (import.meta.env.DEV) {
-  (window as unknown as { __dc: unknown }).__dc = { player, traffic, battle, run, garage, save, graph, signals, wanted, missions, weather };
+  (window as unknown as { __dc: unknown }).__dc = { player, traffic, battle, run, garage, save, graph, signals, wanted, missions, weather, map, dbg, scene, world, camera };
 }
 
 // ----- 루프 -----
@@ -178,14 +202,14 @@ function frame(now: number): void {
   const inp = started && !garage.open ? input.read() : IDLE;
 
   lastHit = 0;
-  const r = player.step(dt, inp, carStats, city.colliders, () => traffic.collidePlayer(S));
+  const r = player.step(dt, inp, carStats, world, () => traffic.collidePlayer(S));
   if (player.fell) {
     player.reset();
-    toast('한강에 빠졌어요', '가까운 교차로로 돌아왔어요', 2);
+    toast('한강에 빠졌어요', '가까운 길로 돌아왔어요', 2);
   }
   player.applyVisual(r, inp, dt);
   signals.update(t);
-  const playerNode = graph.nearest(S.x, S.z);
+  const playerNode = graph.nearestNode(S.x, S.z);
   traffic.update(dt, S, (n) => battle.racePace(n, S), CHASE_PACE[wanted.stars]);
   if (started) {
     checkRedLight();
@@ -256,6 +280,13 @@ function frame(now: number): void {
   audio?.update(dt, 48 + within * 85 + gear * 9 + (inp.up ? 8 : 0), inp.up, r.drifting, wanted.stars > 0 && nearestPolice < 140);
 
   chase.update(dt, t, S, r.vf, carStats.vmax, started);
+  if (dbg.debugCam) {
+    const c = dbg.debugCam;
+    camera.position.set(c.x, c.y, c.z);
+    camera.lookAt(c.lx, 0, c.lz);
+    camera.fov = 55;
+    camera.updateProjectionMatrix();
+  }
   stage.render();
   requestAnimationFrame(frame);
 }

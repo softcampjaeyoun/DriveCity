@@ -43,17 +43,29 @@ export interface Missions {
 const TYPE_NAME: Record<MissionType, string> = { delivery: '퀵 배달', taxi: '택시 손님', sprint: '스프린트' };
 
 export function createMissions(g: RoadGraph, ev: MissionEvents): Missions {
-  // 미션 거점 4곳: 강 남북 각 2곳, 서로 멀리
+  // 미션 거점: 지도 네 구역의 중심에 가까운 큰 교차로
+  const { minX, maxX, minZ, maxZ } = g.bbox;
   const spots: MissionSpot[] = [];
-  const candidates: Node[] = [
-    [2, 1],
-    [g.nx - 3, 2],
-    [1, g.nz - 2],
-    [g.nx - 2, g.nz - 3],
-  ];
-  for (const n of candidates) {
-    const [x, z] = g.pos(n);
-    spots.push({ node: n, x, z, cool: 0 });
+  for (const [fx, fz] of [
+    [0.28, 0.28],
+    [0.72, 0.3],
+    [0.3, 0.72],
+    [0.7, 0.7],
+  ]) {
+    const cx = minX + (maxX - minX) * fx;
+    const cz = minZ + (maxZ - minZ) * fz;
+    let best = g.majorNodes[0];
+    let bd = Infinity;
+    for (const n of g.majorNodes) {
+      const [x, z] = g.pos(n);
+      const d = Math.hypot(x - cx, z - cz);
+      if (d < bd && spots.every((s) => Math.hypot(s.x - x, s.z - z) > 300)) {
+        bd = d;
+        best = n;
+      }
+    }
+    const [x, z] = g.pos(best);
+    spots.push({ node: best, x, z, cool: 0 });
   }
 
   let active: MissionDef | null = null;
@@ -63,15 +75,25 @@ export function createMissions(g: RoadGraph, ev: MissionEvents): Missions {
   let lastSpot: MissionSpot | null = null;
   let typeCursor = 0;
 
-  function farNode(from: Node, min: number, max: number): Node {
-    let best = g.randomNode();
-    for (let tries = 0; tries < 60; tries++) {
+  /** 직선 거리로 후보를 추리고 그래프 거리로 확정 */
+  function farNode(from: Node, min: number, max: number): { node: Node; d: number } {
+    const [fx, fz] = g.pos(from);
+    const cands: Node[] = [];
+    for (let tries = 0; tries < 80 && cands.length < 6; tries++) {
       const n = g.randomNode();
-      const d = g.dist(from, n);
-      if (d >= min && d <= max) return n;
-      if (Math.abs(g.dist(from, best) - (min + max) / 2) > Math.abs(d - (min + max) / 2)) best = n;
+      const d = Math.hypot(g.pos(n)[0] - fx, g.pos(n)[1] - fz);
+      if (d >= min * 0.7 && d <= max * 0.95 && n !== from) cands.push(n);
     }
-    return best;
+    let best: { node: Node; d: number } | null = null;
+    for (const n of cands) {
+      const d = g.dist(from, n);
+      if (!Number.isFinite(d)) continue;
+      const ok = d >= min && d <= max;
+      if (!best || (ok && !(best.d >= min && best.d <= max)) || (ok === (best.d >= min && best.d <= max) && Math.abs(d - (min + max) / 2) < Math.abs(best.d - (min + max) / 2))) best = { node: n, d };
+    }
+    if (best) return best;
+    const n = g.randomNode();
+    return { node: n, d: Math.hypot(g.pos(n)[0] - fx, g.pos(n)[1] - fz) * 1.3 };
   }
 
   function make(spot: MissionSpot): MissionDef {
@@ -81,20 +103,19 @@ export function createMissions(g: RoadGraph, ev: MissionEvents): Missions {
       let from = spot.node;
       let total = 0;
       for (let k = 0; k < 3; k++) {
-        const n = farNode(from, 160, 360);
-        total += g.dist(from, n);
-        targets.push(n);
-        from = n;
+        const { node, d } = farNode(from, 200, 450);
+        total += d;
+        targets.push(node);
+        from = node;
       }
-      return { type, title: '스프린트 3구간', targets, timeLimit: Math.round(total / 17 + 12), reward: Math.round(total * 1.6), xp: Math.round(total / 8) };
+      return { type, title: '스프린트 3구간', targets, timeLimit: Math.round(total / 16 + 15), reward: Math.round(total * 1.6), xp: Math.round(total / 8) };
     }
-    const n = farNode(spot.node, 260, 650);
-    const d = g.dist(spot.node, n);
-    const dest = placeName(g, n);
+    const { node, d } = farNode(spot.node, 350, 900);
+    const dest = placeName(g, node);
     if (type === 'taxi') {
-      return { type, title: `손님: ${dest}까지`, targets: [n], timeLimit: Math.round(d / 13 + 20), reward: Math.round(d * 1.8 + 200), xp: Math.round(d / 6) };
+      return { type, title: `손님: ${dest}까지`, targets: [node], timeLimit: Math.round(d / 12 + 25), reward: Math.round(d * 1.8 + 200), xp: Math.round(d / 6) };
     }
-    return { type, title: `퀵 배달: ${dest}`, targets: [n], timeLimit: Math.round(d / 15 + 15), reward: Math.round(d * 1.4 + 200), xp: Math.round(d / 7) };
+    return { type, title: `퀵 배달: ${dest}`, targets: [node], timeLimit: Math.round(d / 14 + 20), reward: Math.round(d * 1.4 + 200), xp: Math.round(d / 7) };
   }
 
   function finish(success: boolean, why: string): void {
@@ -149,7 +170,7 @@ export function createMissions(g: RoadGraph, ev: MissionEvents): Missions {
       if (!active) {
         const speed = Math.hypot(S.vx, S.vz);
         for (const sp of spots) {
-          if (sp.cool > 0 || Math.hypot(sp.x - S.x, sp.z - S.z) > 8 || speed > 14) continue;
+          if (sp.cool > 0 || Math.hypot(sp.x - S.x, sp.z - S.z) > 9 || speed > 14) continue;
           active = make(sp);
           idx = 0;
           timeLeft = active.timeLimit;
@@ -171,7 +192,7 @@ export function createMissions(g: RoadGraph, ev: MissionEvents): Missions {
         return;
       }
       const [tx, tz] = g.pos(active.targets[idx]);
-      if (Math.hypot(tx - S.x, tz - S.z) < 9) {
+      if (Math.hypot(tx - S.x, tz - S.z) < 10) {
         idx++;
         if (idx >= active.targets.length) finish(true, '');
         else ev.toast(`${idx} / ${active.targets.length} 구간 통과`, `${Math.ceil(timeLeft)}초 남음`, 1.2);

@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "map:fetch": "node tools/fetch-osm.mjs",
+    "map:build": "node tools/build-map.mjs"
   },
   "devDependencies": {
     "@types/three": "^0.186.0",

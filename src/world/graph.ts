@@ -1,176 +1,330 @@
-import { DIRS, EDGE } from '../config.ts';
-import { mulberry32 } from '../util/math.ts';
+import type { EdgeData, MapData, RoadClass } from './mapdata.ts';
 
-/** 교차로 격자 좌표 */
-export type Node = [number, number];
-export type District = 'cbd' | 'old' | 'mixed' | 'park' | 'water';
+export const LANE_W = 3.3;
+export const CLASS_RANK: Record<RoadClass, number> = { motorway: 0, trunk: 1, primary: 2, secondary: 3, tertiary: 4, unclassified: 5, residential: 6, living_street: 7 };
 
-export interface Block {
-  i: number;
-  j: number;
-  x0: number;
-  z0: number;
-  w: number;
-  d: number;
-  district: District;
+/** 교차로 번호 */
+export type Node = number;
+/** 진행 방향: +1 = a→b, -1 = b→a */
+export type Dir = 1 | -1;
+
+export interface Edge extends EdgeData {
+  id: number;
+  /** 각 꼭짓점까지의 누적 길이 */
+  cum: number[];
+  width: number;
+  half: number;
+  rank: number;
 }
 
-/**
- * 도로 그래프. 격자지만 간격이 제각각이고, 강을 건너는 도로는 다리가 있는 열에만 있다.
- * 서울을 본뜬 배치: 북쪽은 구도심(저층·네온)과 업무지구가 섞이고, 한강 남쪽은 고층 업무지구.
- */
+export interface PointOn {
+  x: number;
+  z: number;
+  /** 진행 방향 단위 벡터 */
+  hx: number;
+  hz: number;
+}
+
+export interface Step {
+  e: Edge;
+  dir: Dir;
+}
+
+export interface EdgeHit {
+  e: Edge;
+  /** a 기준 호 길이 */
+  s: number;
+  d: number;
+  /** 중심선 기준 오른쪽(+)/왼쪽(-) 거리 (a→b 방향 기준) */
+  side: number;
+}
+
 export interface RoadGraph {
-  xs: number[];
-  zs: number[];
-  nx: number;
-  nz: number;
-  minX: number;
-  maxX: number;
-  minZ: number;
-  maxZ: number;
-  /** 강 띠의 z 범위. 블록 행 riverRow 가 물이다 */
-  river: { z0: number; z1: number; row: number };
-  bridges: number[];
-  blocks: Block[];
-  inGrid(i: number, j: number): boolean;
-  hasEdge(i: number, j: number, d: number): boolean;
-  /** 교차로 중심 사이 거리 */
-  edgeLen(i: number, j: number, d: number): number;
-  degree(i: number, j: number): number;
+  map: MapData;
+  nodes: Array<[number, number]>;
+  edges: Edge[];
+  out: number[][];
+  bbox: MapData['bbox'];
+  start: Node;
+  majorNodes: Node[];
+  totalLen: number;
   pos(n: Node): [number, number];
-  nearest(x: number, z: number): Node;
-  /** from → to 최단 경로의 방향 목록 (BFS) */
-  route(from: Node, to: Node): number[];
-  /** 교차로 중심 사이 그래프 거리 (m) */
+  degree(n: Node): number;
+  edgesAt(n: Node): Edge[];
+  otherEnd(e: Edge, n: Node): Node;
+  /** 간선 e 에서 노드 n 으로 들어오는 진행 방향 */
+  dirInto(e: Edge, n: Node): Dir;
+  canTravel(e: Edge, dir: Dir): boolean;
+  lanes(e: Edge, dir: Dir): number;
+  /** 중심선에서 오른쪽으로의 차선 중앙 거리 */
+  laneOffset(e: Edge, dir: Dir, lane: number): number;
+  /** 진행 시작점에서 s 만큼 간 지점 */
+  pointAt(e: Edge, dir: Dir, s: number): PointOn;
+  /** 교차로 쪽에서 곡선으로 넘기기 위해 잘라내는 길이 */
+  cut(e: Edge, n: Node): number;
+  nearestNode(x: number, z: number): Node;
+  nearestEdge(x: number, z: number, maxD?: number): EdgeHit | null;
+  route(from: Node, to: Node): Step[];
   dist(from: Node, to: Node): number;
   randomNode(): Node;
+  randomEdge(): Edge;
 }
 
-export function buildGraph(): RoadGraph {
-  const rand = mulberry32(7);
-  const RIVER = 120;
-  // 블록 폭 패턴. 합이 도시 크기
-  const bw = [60, 48, 72, 56, 64, 52, 68, 58, 50, 66, 60];
-  const bdNorth = [56, 64, 48, 70, 60];
-  const bdSouth = [62, 54, 72, 58, 66];
-  const bd = [...bdNorth, RIVER, ...bdSouth];
-  const riverRow = bdNorth.length;
-  const bridges = [2, 5, 8];
-
-  const cum = (arr: number[]): number[] => {
-    const out = [0];
-    for (const v of arr) out.push(out[out.length - 1] + v + 2 * EDGE);
-    return out;
-  };
-  const rawX = cum(bw);
-  const rawZ = cum(bd);
-  const cx = rawX[rawX.length - 1] / 2;
-  const cz = rawZ[rawZ.length - 1] / 2;
-  const xs = rawX.map((v) => v - cx);
-  const zs = rawZ.map((v) => v - cz);
-  const nx = xs.length;
-  const nz = zs.length;
-
-  const inGrid = (i: number, j: number) => i >= 0 && i < nx && j >= 0 && j < nz;
-  const hasEdge = (i: number, j: number, d: number): boolean => {
-    const ni = i + DIRS[d][0];
-    const nj = j + DIRS[d][1];
-    if (!inGrid(i, j) || !inGrid(ni, nj)) return false;
-    // 강을 건너는 남북 도로는 다리 열에만 있다
-    if (d === 0 && j === riverRow && !bridges.includes(i)) return false;
-    if (d === 2 && j === riverRow + 1 && !bridges.includes(i)) return false;
-    return true;
-  };
-  const pos = (n: Node): [number, number] => [xs[n[0]], zs[n[1]]];
-  const edgeLen = (i: number, j: number, d: number) => {
-    const ni = i + DIRS[d][0];
-    const nj = j + DIRS[d][1];
-    return Math.abs(xs[ni] - xs[i]) + Math.abs(zs[nj] - zs[j]);
-  };
-  const degree = (i: number, j: number) => [0, 1, 2, 3].filter((d) => hasEdge(i, j, d)).length;
-
-  // 블록과 지역구
-  const blocks: Block[] = [];
-  for (let i = 0; i < nx - 1; i++) {
-    for (let j = 0; j < nz - 1; j++) {
-      const x0 = xs[i] + EDGE;
-      const z0 = zs[j] + EDGE;
-      const w = xs[i + 1] - EDGE - x0;
-      const d = zs[j + 1] - EDGE - z0;
-      let district: District;
-      if (j === riverRow) district = 'water';
-      else if (rand() < 0.07 && !(Math.abs(x0 + w / 2) < 80 && Math.abs(z0 + d / 2) < 80)) district = 'park';
-      else if (j > riverRow) district = rand() < 0.75 ? 'cbd' : 'mixed';
-      else district = i >= 3 && i <= 7 ? (rand() < 0.8 ? 'old' : 'mixed') : rand() < 0.4 ? 'cbd' : 'mixed';
-      blocks.push({ i, j, x0, z0, w, d, district });
-    }
+export function buildGraph(map: MapData): RoadGraph {
+  const nodes = map.nodes;
+  const edges: Edge[] = map.edges.map((d, id) => {
+    const cum = [0];
+    for (let i = 2; i < d.pts.length; i += 2) cum.push(cum[cum.length - 1] + Math.hypot(d.pts[i] - d.pts[i - 2], d.pts[i + 1] - d.pts[i - 1]));
+    const lanesTotal = d.lb === 0 ? d.lf : d.lf + d.lb;
+    const width = lanesTotal * LANE_W;
+    return { ...d, id, cum, len: cum[cum.length - 1] || d.len, width, half: width / 2, rank: CLASS_RANK[d.cls] ?? 6 };
+  });
+  const out: number[][] = nodes.map(() => []);
+  for (const e of edges) {
+    out[e.a].push(e.id);
+    out[e.b].push(e.id);
   }
+  const degree = (n: Node) => out[n].length;
+  const totalLen = edges.reduce((s, e) => s + e.len, 0);
+  const majorNodes: Node[] = [];
+  for (let n = 0; n < nodes.length; n++) if (degree(n) >= 3 && out[n].some((id) => edges[id].rank <= 6)) majorNodes.push(n);
 
-  const key = (n: Node) => n[0] * 100 + n[1];
-  const route = (from: Node, to: Node): number[] => {
-    if (from[0] === to[0] && from[1] === to[1]) return [];
-    const prev = new Map<number, [Node, number]>();
-    const seen = new Set<number>([key(from)]);
-    const queue: Node[] = [from];
-    while (queue.length) {
-      const cur = queue.shift()!;
-      for (let d = 0; d < 4; d++) {
-        if (!hasEdge(cur[0], cur[1], d)) continue;
-        const nxt: Node = [cur[0] + DIRS[d][0], cur[1] + DIRS[d][1]];
-        const k = key(nxt);
-        if (seen.has(k)) continue;
-        seen.add(k);
-        prev.set(k, [cur, d]);
-        if (k === key(to)) {
-          const dirs: number[] = [];
-          let n = nxt;
-          while (key(n) !== key(from)) {
-            const [p, dir] = prev.get(key(n))!;
-            dirs.push(dir);
-            n = p;
-          }
-          return dirs.reverse();
-        }
-        queue.push(nxt);
+  // ----- 공간 색인 -----
+  const CELL = 40;
+  const cellKey = (x: number, z: number) => `${Math.floor(x / CELL)},${Math.floor(z / CELL)}`;
+  const nodeGrid = new Map<string, number[]>();
+  nodes.forEach(([x, z], i) => {
+    const k = cellKey(x, z);
+    const list = nodeGrid.get(k) ?? [];
+    list.push(i);
+    nodeGrid.set(k, list);
+  });
+  const edgeGrid = new Map<string, Set<number>>();
+  for (const e of edges) {
+    for (let i = 0; i < e.pts.length - 2; i += 2) {
+      const x0 = e.pts[i];
+      const z0 = e.pts[i + 1];
+      const x1 = e.pts[i + 2];
+      const z1 = e.pts[i + 3];
+      const n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, z1 - z0) / CELL));
+      for (let k = 0; k <= n; k++) {
+        const t = k / n;
+        const key = cellKey(x0 + (x1 - x0) * t, z0 + (z1 - z0) * t);
+        const set = edgeGrid.get(key) ?? new Set<number>();
+        set.add(e.id);
+        edgeGrid.set(key, set);
       }
     }
-    return [];
-  };
-  const dist = (from: Node, to: Node): number => {
-    let n: Node = [from[0], from[1]];
-    let total = 0;
-    for (const d of route(from, to)) {
-      total += edgeLen(n[0], n[1], d);
-      n = [n[0] + DIRS[d][0], n[1] + DIRS[d][1]];
-    }
-    return total;
-  };
-  const nearestIdx = (arr: number[], v: number) => {
-    let best = 0;
-    for (let k = 1; k < arr.length; k++) if (Math.abs(arr[k] - v) < Math.abs(arr[best] - v)) best = k;
-    return best;
+  }
+  const cellsAround = (x: number, z: number, r: number): string[] => {
+    const keys: string[] = [];
+    const cx = Math.floor(x / CELL);
+    const cz = Math.floor(z / CELL);
+    const rc = Math.ceil(r / CELL);
+    for (let i = -rc; i <= rc; i++) for (let j = -rc; j <= rc; j++) keys.push(`${cx + i},${cz + j}`);
+    return keys;
   };
 
-  return {
-    xs,
-    zs,
-    nx,
-    nz,
-    minX: xs[0] - EDGE,
-    maxX: xs[nx - 1] + EDGE,
-    minZ: zs[0] - EDGE,
-    maxZ: zs[nz - 1] + EDGE,
-    river: { z0: zs[riverRow] + EDGE, z1: zs[riverRow + 1] - EDGE, row: riverRow },
-    bridges,
-    blocks,
-    inGrid,
-    hasEdge,
-    edgeLen,
-    degree,
-    pos,
-    nearest: (x, z) => [nearestIdx(xs, x), nearestIdx(zs, z)],
-    route,
-    dist,
-    randomNode: () => [Math.floor(Math.random() * nx), Math.floor(Math.random() * nz)],
+  const pointAt = (e: Edge, dir: Dir, s: number): PointOn => {
+    const sa = dir === 1 ? s : e.len - s;
+    const cum = e.cum;
+    let lo = 0;
+    let hi = cum.length - 2;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (cum[mid] <= sa) lo = mid;
+      else hi = mid - 1;
+    }
+    const segLen = cum[lo + 1] - cum[lo] || 1;
+    const t = Math.min(1, Math.max(0, (sa - cum[lo]) / segLen));
+    const x0 = e.pts[lo * 2];
+    const z0 = e.pts[lo * 2 + 1];
+    const x1 = e.pts[lo * 2 + 2];
+    const z1 = e.pts[lo * 2 + 3];
+    let hx = (x1 - x0) / segLen;
+    let hz = (z1 - z0) / segLen;
+    if (dir === -1) {
+      hx = -hx;
+      hz = -hz;
+    }
+    return { x: x0 + (x1 - x0) * t, z: z0 + (z1 - z0) * t, hx, hz };
   };
+
+  function projectOnEdge(e: Edge, x: number, z: number): EdgeHit {
+    let best: EdgeHit = { e, s: 0, d: Infinity, side: 0 };
+    for (let i = 0; i < e.pts.length - 2; i += 2) {
+      const x0 = e.pts[i];
+      const z0 = e.pts[i + 1];
+      const dx = e.pts[i + 2] - x0;
+      const dz = e.pts[i + 3] - z0;
+      const l2 = dx * dx + dz * dz || 1;
+      const t = Math.min(1, Math.max(0, ((x - x0) * dx + (z - z0) * dz) / l2));
+      const px = x0 + dx * t;
+      const pz = z0 + dz * t;
+      const d = Math.hypot(x - px, z - pz);
+      if (d < best.d) {
+        const l = Math.sqrt(l2);
+        // 오른쪽(+): 진행 방향 (dx,dz) 의 오른쪽 = (-dz, dx)
+        const side = ((x - px) * -dz + (z - pz) * dx) / l;
+        best = { e, s: e.cum[i / 2] + l * t, d, side };
+      }
+    }
+    return best;
+  }
+
+  // ----- 다익스트라 -----
+  function dijkstra(from: Node, to: Node): { prev: Int32Array; prevEdge: Int32Array; dist: Float64Array } | null {
+    const dist = new Float64Array(nodes.length).fill(Infinity);
+    const prev = new Int32Array(nodes.length).fill(-1);
+    const prevEdge = new Int32Array(nodes.length).fill(-1);
+    const heap: Array<[number, number]> = [[0, from]];
+    dist[from] = 0;
+    const push = (item: [number, number]) => {
+      heap.push(item);
+      let i = heap.length - 1;
+      while (i > 0) {
+        const p = (i - 1) >> 1;
+        if (heap[p][0] <= heap[i][0]) break;
+        [heap[p], heap[i]] = [heap[i], heap[p]];
+        i = p;
+      }
+    };
+    const pop = (): [number, number] => {
+      const top = heap[0];
+      const last = heap.pop()!;
+      if (heap.length) {
+        heap[0] = last;
+        let i = 0;
+        for (;;) {
+          const l = i * 2 + 1;
+          const r = l + 1;
+          let m = i;
+          if (l < heap.length && heap[l][0] < heap[m][0]) m = l;
+          if (r < heap.length && heap[r][0] < heap[m][0]) m = r;
+          if (m === i) break;
+          [heap[m], heap[i]] = [heap[i], heap[m]];
+          i = m;
+        }
+      }
+      return top;
+    };
+    while (heap.length) {
+      const [d, n] = pop();
+      if (d > dist[n]) continue;
+      if (n === to) return { prev, prevEdge, dist };
+      for (const id of out[n]) {
+        const e = edges[id];
+        const dir: Dir = e.a === n ? 1 : -1;
+        if (!(dir === 1 ? e.lf > 0 : e.lb > 0)) continue;
+        const m = dir === 1 ? e.b : e.a;
+        // 좁은 길은 조금 비싸게 쳐서 큰길을 선호
+        const w = e.len * (1 + e.rank * 0.08);
+        if (d + w < dist[m]) {
+          dist[m] = d + w;
+          prev[m] = n;
+          prevEdge[m] = id;
+          push([d + w, m]);
+        }
+      }
+    }
+    return null;
+  }
+
+  const g: RoadGraph = {
+    map,
+    nodes,
+    edges,
+    out,
+    bbox: map.bbox,
+    start: map.start,
+    majorNodes,
+    totalLen,
+    pos: (n) => [nodes[n][0], nodes[n][1]],
+    degree,
+    edgesAt: (n) => out[n].map((id) => edges[id]),
+    otherEnd: (e, n) => (e.a === n ? e.b : e.a),
+    dirInto: (e, n) => (e.b === n ? 1 : -1),
+    canTravel: (e, dir) => (dir === 1 ? e.lf > 0 : e.lb > 0),
+    lanes: (e, dir) => (dir === 1 ? e.lf : e.lb),
+    laneOffset(e, dir, lane) {
+      const n = dir === 1 ? e.lf : e.lb;
+      const i = Math.min(Math.max(0, lane), n - 1);
+      if (e.lb === 0) return (i + 0.5 - n / 2) * LANE_W; // 일방통행은 도로 전체를 쓴다
+      return (i + 0.5) * LANE_W;
+    },
+    pointAt,
+    cut(e, n) {
+      if (degree(n) < 3) return 0;
+      // 교차로의 다른 길 폭만큼 들어가서 곡선을 시작한다
+      let w = 0;
+      for (const id of out[n]) if (id !== e.id) w = Math.max(w, edges[id].half);
+      return Math.min(w + 2, e.len * 0.35);
+    },
+    nearestNode(x, z) {
+      let best = 0;
+      let bd = Infinity;
+      for (let r = 1; r <= 8; r++) {
+        for (const k of cellsAround(x, z, r * CELL)) {
+          for (const i of nodeGrid.get(k) ?? []) {
+            const d = Math.hypot(nodes[i][0] - x, nodes[i][1] - z);
+            if (d < bd) {
+              bd = d;
+              best = i;
+            }
+          }
+        }
+        if (bd < r * CELL) return best;
+      }
+      if (bd === Infinity) {
+        nodes.forEach(([nx, nz], i) => {
+          const d = Math.hypot(nx - x, nz - z);
+          if (d < bd) {
+            bd = d;
+            best = i;
+          }
+        });
+      }
+      return best;
+    },
+    nearestEdge(x, z, maxD = 60) {
+      let best: EdgeHit | null = null;
+      const seen = new Set<number>();
+      for (const k of cellsAround(x, z, maxD)) {
+        for (const id of edgeGrid.get(k) ?? []) {
+          if (seen.has(id)) continue;
+          seen.add(id);
+          const hit = projectOnEdge(edges[id], x, z);
+          if (hit.d <= maxD && (!best || hit.d < best.d)) best = hit;
+        }
+      }
+      return best;
+    },
+    route(from, to) {
+      if (from === to) return [];
+      const r = dijkstra(from, to);
+      if (!r) return [];
+      const steps: Step[] = [];
+      let n = to;
+      while (n !== from && r.prev[n] >= 0) {
+        const e = edges[r.prevEdge[n]];
+        steps.push({ e, dir: e.b === n ? 1 : -1 });
+        n = r.prev[n];
+      }
+      return steps.reverse();
+    },
+    dist(from, to) {
+      const r = dijkstra(from, to);
+      return r ? r.dist[to] : Infinity;
+    },
+    randomNode: () => majorNodes[Math.floor(Math.random() * majorNodes.length)] ?? 0,
+    randomEdge() {
+      let r = Math.random() * totalLen;
+      for (const e of edges) {
+        r -= e.len;
+        if (r <= 0) return e;
+      }
+      return edges[edges.length - 1];
+    },
+  };
+  return g;
 }

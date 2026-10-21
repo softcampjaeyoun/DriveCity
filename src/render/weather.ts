@@ -39,7 +39,7 @@ export function createWeather(scene: THREE.Scene, city: City, toast: (big: strin
     raining = on;
     rain.visible = on;
     city.setWet(on);
-    fog.density = on ? 0.0095 : 0.0062;
+    fog.density = on ? 0.008 : 0.0045;
     if (announce) toast(on ? '비가 내리기 시작했어요' : '비가 그쳤어요', on ? '노면이 미끄러워요. 조심하세요' : '');
   };
 
