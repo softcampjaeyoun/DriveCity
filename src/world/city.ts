@@ -11,8 +11,8 @@ import { rightOf } from './roads.ts';
 export interface TileScene {
   group: THREE.Group;
   obstacles: Obstacle[];
-  /** 보행자가 걷는 인도 선분 (큰길 양쪽) */
-  walks: Array<{ x0: number; z0: number; x1: number; z1: number }>;
+  /** 보행자가 걷는 인도 선분 (큰길 양쪽). nx,nz 는 차도에서 멀어지는 방향 */
+  walks: Array<{ x0: number; z0: number; x1: number; z1: number; nx: number; nz: number }>;
   dispose(): void;
 }
 
@@ -405,11 +405,24 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
             const x1 = e.pts[i + 2];
             const z1 = e.pts[i + 3];
             const l = Math.hypot(x1 - x0, z1 - z0) || 1;
+            if (l < 6) continue;
             const nx = -(z1 - z0) / l;
             const nz = (x1 - x0) / l;
             for (const side of [-1, 1]) {
               const off = side * (e.half + 2.4);
-              walks.push({ x0: x0 + nx * off, z0: z0 + nz * off, x1: x1 + nx * off, z1: z1 + nz * off });
+              const w = { x0: x0 + nx * off, z0: z0 + nz * off, x1: x1 + nx * off, z1: z1 + nz * off, nx: nx * side, nz: nz * side };
+              // 상·하행이 따로 그려진 대로는 이 자리가 옆 차로 위일 수 있다. 가운데와 양끝이 다른 길의 노면 안이면 뺀다
+              let onRoad = false;
+              for (const t of [0.1, 0.5, 0.9]) {
+                const px = w.x0 + (w.x1 - w.x0) * t;
+                const pz = w.z0 + (w.z1 - w.z0) * t;
+                const near = g.nearestEdge(px, pz, 16);
+                if (near && near.e.id !== e.id && near.d < near.e.half + 0.6) {
+                  onRoad = true;
+                  break;
+                }
+              }
+              if (!onRoad) walks.push(w);
             }
           }
         }
