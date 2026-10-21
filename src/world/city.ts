@@ -305,6 +305,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
   const poolGeo = new THREE.PlaneGeometry(17, 17).rotateX(-Math.PI / 2);
   const tankGeo = new THREE.CylinderGeometry(0.9, 0.9, 1.6, 10);
   const manholeGeo = new THREE.CircleGeometry(0.4, 12).rotateX(-Math.PI / 2);
+  const discGeo = new THREE.CircleGeometry(1, 20).rotateX(-Math.PI / 2);
 
   // ----- 나무 모델 (한 번만 로드) -----
   let treeModels: MergedModel[] | null = null;
@@ -416,6 +417,22 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
       if (!sb.empty) addMesh(sb.build(), walkMat);
       if (!rb.empty) addMesh(rb.build(), roadMat);
       if (!bb.empty) addMesh(bb.build(), deckMat);
+      // 교차로 안쪽: 도로 띠가 cut 만큼 비워 두는 자리를 원판으로 덮는다
+      const discs: Placement[] = [];
+      for (const [n] of tile.nodes) {
+        const es = g.edgesAt(n);
+        if (es.length < 2) continue;
+        let r = 0;
+        let bridge = false;
+        for (const e of es) {
+          r = Math.max(r, e.half);
+          if (e.bridge) bridge = true;
+        }
+        const [x, z] = g.pos(n);
+        const cut = Math.max(...es.map((e) => g.cut(e, n)));
+        discs.push({ x, y: bridge ? 0.31 : 0.021, z, yaw: 0, w: r + cut * 0.5 + 0.6, h: 1, d: r + cut * 0.5 + 0.6 });
+      }
+      addInstanced(discGeo, roadMat, discs);
       const rails: Placement[] = [];
       for (const e of edges) {
         if (!e.bridge) continue;

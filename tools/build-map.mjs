@@ -521,9 +521,11 @@ for (const n of osmNodes.values()) {
     for (let i = buildings.length - 1; i >= 0; i--) {
       const r = buildings[i].ring;
       let intrudes = false;
+      // V-World 는 실측 폴리곤이라 OSM 도로 중심선과 1m 안팎 어긋날 수 있다. 깊이 들어온 것만 뺀다
+      const limit = vworldRaw ? -1.6 : -0.2;
       for (let k = 0; k < r.length && !intrudes; k += 2) {
         const road = nearestRoad(r[k], r[k + 1], 20);
-        if (road && road.d < -0.2) intrudes = true;
+        if (road && road.d < limit) intrudes = true;
       }
       if (intrudes) buildings.splice(i, 1);
     }
