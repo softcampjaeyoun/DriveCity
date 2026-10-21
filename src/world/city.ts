@@ -336,7 +336,7 @@ export function buildCity(scene: THREE.Scene, map: MapData, g: RoadGraph, isSign
 
   // ----- 건물 재질 -----
   // 벽 지오메트리는 재질별·구역별(CHUNK m)로 나눠 시야 밖 구역은 그리지 않게 한다
-  const CHUNK = 320;
+  const CHUNK = 640;
   interface Wall {
     mat: THREE.MeshStandardMaterial;
     chunks: Map<string, GeoBuilder>;
@@ -396,11 +396,14 @@ export function buildCity(scene: THREE.Scene, map: MapData, g: RoadGraph, isSign
 
   /** 벽 사각형 하나 (y0..y1). uv 는 (u0..u1, v0..v1) */
   function wallQuad(b: GeoBuilder, x0: number, z0: number, x1: number, z1: number, y0: number, y1: number, nx: number, nz: number, u0: number, u1: number, v0: number, v1: number): void {
-    const a = b.vertex(x0, y0, z0, nx, 0, nz, u0, v0);
-    const c = b.vertex(x1, y0, z1, nx, 0, nz, u1, v0);
-    const d = b.vertex(x1, y1, z1, nx, 0, nz, u1, v1);
-    const e = b.vertex(x0, y1, z0, nx, 0, nz, u0, v1);
+    // 바깥에서 봤을 때 글씨가 왼→오 로 읽히도록, 면 방향에 따라 u 를 뒤집는다
     const cross = (x1 - x0) * nz - (z1 - z0) * nx;
+    const ua = cross > 0 ? u0 : u1;
+    const ub = cross > 0 ? u1 : u0;
+    const a = b.vertex(x0, y0, z0, nx, 0, nz, ua, v0);
+    const c = b.vertex(x1, y0, z1, nx, 0, nz, ub, v0);
+    const d = b.vertex(x1, y1, z1, nx, 0, nz, ub, v1);
+    const e = b.vertex(x0, y1, z0, nx, 0, nz, ua, v1);
     if (cross > 0) b.quad(a, c, d, e);
     else b.quad(c, a, e, d);
   }

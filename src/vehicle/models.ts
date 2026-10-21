@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { mergeObject } from '../render/assets.ts';
 
 /**
  * 외부 3D 모델 등록부. glb 와 fbx 를 지원한다.
@@ -22,7 +23,8 @@ export interface ModelDef {
 
 const KENNEY = 'Kenney Car Kit 3.1, CC0, kenney.nl';
 const RGSDEV = 'Free Low Poly Vehicles Pack by Rgsdev, CC0, opengameart.org';
-const kenney = (name: string, length: number): ModelDef => ({ file: `kenney/${name}.glb`, length, yaw: Math.PI, attribution: KENNEY });
+// Kenney 차 모델은 앞바퀴가 +Z 에 있어 우리 진행 방향(+Z)과 같다. 돌리면 뒤로 달리는 것처럼 보인다
+const kenney = (name: string, length: number): ModelDef => ({ file: `kenney/${name}.glb`, length, attribution: KENNEY });
 
 export const MODELS: Record<string, ModelDef> = {
   // 교통 (src/vehicle/kinds.ts 의 models 배열에서 고른다)
@@ -105,6 +107,15 @@ function normalize(obj: THREE.Object3D, def: ModelDef): THREE.Group {
     });
     mesh.material = Array.isArray(mesh.material) ? converted : converted[0];
   });
+  // 차체·바퀴 여러 메시를 하나로 합쳐 차 한 대당 그리기 호출을 1번으로
+  const merged = mergeObject(root);
+  if (merged) {
+    const single = new THREE.Group();
+    const mesh = new THREE.Mesh(merged.geometry, merged.materials.length === 1 ? merged.materials[0] : merged.materials);
+    mesh.castShadow = true;
+    single.add(mesh);
+    return single;
+  }
   return root;
 }
 

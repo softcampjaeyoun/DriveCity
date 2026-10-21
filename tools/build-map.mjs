@@ -479,6 +479,16 @@ for (const n of osmNodes.values()) {
       const road = nearestRoad(x, z, 70);
       if (!road || road.d < 3.5 || road.d > 55) continue; // 길에서 너무 멀면 빈 땅(산, 강변)으로 둔다
       if (road.elevated && road.d < 12) continue; // 고가 옆은 비워 둔다
+      // 상·하행이 따로 그려진 대로의 중앙분리대 자리인지: 반대쪽 16m 안에 나란한 길이 또 있으면 건너뛴다
+      {
+        const px = -road.hz; const pz = road.hx;
+        let median = false;
+        for (const sgn of [1, -1]) {
+          const other = nearestRoad(x + px * sgn * 16, z + pz * sgn * 16, 20);
+          if (other && other.d < 6 && Math.abs(other.hx * road.hx + other.hz * road.hz) > 0.8 && road.d < 14) median = true;
+        }
+        if (median) continue;
+      }
       if (blocked.some((b) => x >= b.bb[0] && x <= b.bb[1] && z >= b.bb[2] && z <= b.bb[3] && inRing(b.ring, x, z))) continue;
       // 도로와 나란한 직사각형
       const big = road.rank <= 2;

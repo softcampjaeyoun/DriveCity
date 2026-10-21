@@ -313,10 +313,20 @@ export interface MergedModel {
 export async function loadMerged(url: string, recolor?: (m: THREE.MeshStandardMaterial) => void): Promise<MergedModel | null> {
   try {
     const g = await gltf.loadAsync(url);
-    g.scene.updateMatrixWorld(true);
+    return mergeObject(g.scene, recolor);
+  } catch (e) {
+    console.warn('[assets] 모델 로드 실패', url, e);
+    return null;
+  }
+}
+
+/** 오브젝트 트리의 모든 메시를 월드 변환 기준으로 하나의 지오메트리로. 그리기 호출을 줄인다 */
+export function mergeObject(root: THREE.Object3D, recolor?: (m: THREE.MeshStandardMaterial) => void): MergedModel | null {
+  {
+    root.updateMatrixWorld(true);
     const geos: THREE.BufferGeometry[] = [];
     const materials: THREE.Material[] = [];
-    g.scene.traverse((o) => {
+    root.traverse((o) => {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh) return;
       const geo = mesh.geometry.clone().applyMatrix4(mesh.matrixWorld);
@@ -350,8 +360,5 @@ export async function loadMerged(url: string, recolor?: (m: THREE.MeshStandardMa
     // 그룹의 materialIndex 를 고유 재질 배열 기준으로
     merged.groups.forEach((grp, i) => (grp.materialIndex = unique.indexOf(materials[i])));
     return { geometry: merged, materials: unique };
-  } catch (e) {
-    console.warn('[assets] 모델 로드 실패', url, e);
-    return null;
   }
 }
