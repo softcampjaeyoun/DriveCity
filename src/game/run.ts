@@ -1,6 +1,6 @@
 import { BEST_BONUS, CHECKPOINTS, RUN_REWARD } from '../config.ts';
 import type { PlayerState } from '../vehicle/player.ts';
-import type { RoadGraph } from '../world/graph.ts';
+import type { Node, RoadGraph } from '../world/graph.ts';
 import { fmtTime } from '../util/math.ts';
 import { addCredits, addXp, persist, save } from './save.ts';
 
@@ -27,16 +27,14 @@ export function createRun(g: RoadGraph, ev: RunEvents): Run {
   let cp = 0;
   let startAt = 0;
   let time = 0;
+  let target: Node = g.start;
   let tx = 0;
   let tz = 0;
   let pausedAt = 0;
 
   function pickTarget(S: PlayerState): void {
-    let tries = 0;
-    let n = g.randomNode();
-    const far = () => Math.hypot(g.pos(n)[0] - S.x, g.pos(n)[1] - S.z);
-    while ((far() < 220 || far() > 900) && tries++ < 60) n = g.randomNode();
-    [tx, tz] = g.pos(n);
+    target = g.randomNode({ x: S.x, z: S.z, min: 220, max: 900 });
+    [tx, tz] = g.pos(target);
   }
 
   return {
@@ -68,6 +66,8 @@ export function createRun(g: RoadGraph, ev: RunEvents): Run {
     update(now, S) {
       if (!active || pausedAt) return;
       time = (now - startAt) / 1000;
+      // 체크포인트가 있던 타일이 내려갔으면 새로 고른다
+      if (!g.has(target)) pickTarget(S);
       if (Math.hypot(tx - S.x, tz - S.z) >= 10) return;
       cp++;
       if (cp < CHECKPOINTS) {
@@ -85,11 +85,7 @@ export function createRun(g: RoadGraph, ev: RunEvents): Run {
       }
       addCredits(reward);
       addXp(30);
-      ev.toast(
-        fmtTime(time),
-        `${isBest ? '최고 기록이에요' : `최고 기록 ${fmtTime(save.best)}`} · +${reward.toLocaleString('ko-KR')} 크레딧 · 3초 뒤 다시 시작해요`,
-        3,
-      );
+      ev.toast(fmtTime(time), `${isBest ? '최고 기록이에요' : `최고 기록 ${fmtTime(save.best)}`} · +${reward.toLocaleString('ko-KR')} 크레딧 · 3초 뒤 다시 시작해요`, 3);
       setTimeout(() => this.start(S), 3000);
     },
 

@@ -1,15 +1,14 @@
-import type { EdgeData, MapData, RoadClass } from './mapdata.ts';
+import type { EdgeData, MapIndex, RoadClass, TileData } from './mapdata.ts';
 
 export const LANE_W = 3.3;
 export const CLASS_RANK: Record<RoadClass, number> = { motorway: 0, trunk: 1, primary: 2, secondary: 3, tertiary: 4, unclassified: 5, residential: 6, living_street: 7 };
 
-/** 교차로 번호 */
+/** 전역 노드 번호 */
 export type Node = number;
 /** 진행 방향: +1 = a→b, -1 = b→a */
 export type Dir = 1 | -1;
 
 export interface Edge extends EdgeData {
-  id: number;
   /** 각 꼭짓점까지의 누적 길이 */
   cum: number[];
   width: number;
@@ -17,6 +16,8 @@ export interface Edge extends EdgeData {
   rank: number;
   /** 차선 폭. 골목은 좁다 */
   laneW: number;
+  /** 이 간선을 가진 타일 */
+  tile: string;
 }
 
 export interface PointOn {
@@ -41,15 +42,25 @@ export interface EdgeHit {
   side: number;
 }
 
+/**
+ * 타일이 들어오고 나가는 동적 도로 그래프.
+ * 노드·간선은 전역 번호로 식별하므로 타일이 바뀌어도 번호가 그대로다.
+ */
 export interface RoadGraph {
-  map: MapData;
-  nodes: Array<[number, number]>;
-  edges: Edge[];
-  out: number[][];
-  bbox: MapData['bbox'];
+  index: MapIndex;
+  bbox: MapIndex['bbox'];
   start: Node;
-  majorNodes: Node[];
-  totalLen: number;
+  /** 로드된 간선 (반복 가능) */
+  readonly edges: Iterable<Edge>;
+  readonly edgeCount: number;
+  readonly totalLen: number;
+  /** 로드된 3갈래 이상 교차로 */
+  readonly majorNodes: Node[];
+  /** 그래프가 바뀔 때마다 1씩 오른다. 캐시 무효화용 */
+  readonly version: number;
+  has(n: Node): boolean;
+  hasEdge(id: number): boolean;
+  edge(id: number): Edge | undefined;
   pos(n: Node): [number, number];
   degree(n: Node): number;
   edgesAt(n: Node): Edge[];
@@ -68,44 +79,41 @@ export interface RoadGraph {
   nearestEdge(x: number, z: number, maxD?: number): EdgeHit | null;
   route(from: Node, to: Node): Step[];
   dist(from: Node, to: Node): number;
-  randomNode(): Node;
-  randomEdge(): Edge;
+  /** 로드된 큰 교차로 중 무작위. 범위를 주면 그 안에서 */
+  randomNode(near?: { x: number; z: number; min: number; max: number }): Node;
+  randomEdge(near?: { x: number; z: number; r: number }): Edge;
+  addTile(key: string, tile: TileData): void;
+  removeTile(key: string): void;
+  onChange(fn: () => void): void;
 }
 
-export function buildGraph(map: MapData): RoadGraph {
-  const nodes = map.nodes;
-  const edges: Edge[] = map.edges.map((d, id) => {
-    const cum = [0];
-    for (let i = 2; i < d.pts.length; i += 2) cum.push(cum[cum.length - 1] + Math.hypot(d.pts[i] - d.pts[i - 2], d.pts[i + 1] - d.pts[i - 1]));
-    const lanesTotal = d.lb === 0 ? d.lf : d.lf + d.lb;
-    const rank = CLASS_RANK[d.cls] ?? 6;
-    // 골목(residential·living_street)은 실제로 좁아서 차선 폭을 줄여야 건물과 안 겹친다
-    const laneW = rank >= 6 ? 2.6 : LANE_W;
-    const width = lanesTotal * laneW;
-    return { ...d, id, cum, len: cum[cum.length - 1] || d.len, width, half: width / 2, rank, laneW };
-  });
-  const out: number[][] = nodes.map(() => []);
-  for (const e of edges) {
-    out[e.a].push(e.id);
-    out[e.b].push(e.id);
-  }
-  const degree = (n: Node) => out[n].length;
-  const totalLen = edges.reduce((s, e) => s + e.len, 0);
-  const majorNodes: Node[] = [];
-  for (let n = 0; n < nodes.length; n++) if (degree(n) >= 3 && out[n].some((id) => edges[id].rank <= 6)) majorNodes.push(n);
+const CELL = 40;
+const cellKey = (x: number, z: number) => `${Math.floor(x / CELL)},${Math.floor(z / CELL)}`;
 
-  // ----- 공간 색인 -----
-  const CELL = 40;
-  const cellKey = (x: number, z: number) => `${Math.floor(x / CELL)},${Math.floor(z / CELL)}`;
-  const nodeGrid = new Map<string, number[]>();
-  nodes.forEach(([x, z], i) => {
-    const k = cellKey(x, z);
-    const list = nodeGrid.get(k) ?? [];
-    list.push(i);
-    nodeGrid.set(k, list);
-  });
+export function createGraph(index: MapIndex): RoadGraph {
+  const nodes = new Map<Node, [number, number]>();
+  const nodeRef = new Map<Node, number>();
+  const edges = new Map<number, Edge>();
+  const out = new Map<Node, number[]>();
+  const tileEdges = new Map<string, number[]>();
+  const nodeGrid = new Map<string, Set<Node>>();
   const edgeGrid = new Map<string, Set<number>>();
-  for (const e of edges) {
+  const listeners: Array<() => void> = [];
+  let version = 0;
+  let totalLen = 0;
+  let majorCache: Node[] | null = null;
+  let edgeArrCache: Edge[] | null = null;
+
+  const bump = () => {
+    version++;
+    majorCache = null;
+    edgeArrCache = null;
+    for (const fn of listeners) fn();
+  };
+  const degree = (n: Node) => out.get(n)?.length ?? 0;
+
+  const edgeCells = (e: Edge): string[] => {
+    const keys = new Set<string>();
     for (let i = 0; i < e.pts.length - 2; i += 2) {
       const x0 = e.pts[i];
       const z0 = e.pts[i + 1];
@@ -114,21 +122,96 @@ export function buildGraph(map: MapData): RoadGraph {
       const n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, z1 - z0) / CELL));
       for (let k = 0; k <= n; k++) {
         const t = k / n;
-        const key = cellKey(x0 + (x1 - x0) * t, z0 + (z1 - z0) * t);
-        const set = edgeGrid.get(key) ?? new Set<number>();
-        set.add(e.id);
-        edgeGrid.set(key, set);
+        keys.add(cellKey(x0 + (x1 - x0) * t, z0 + (z1 - z0) * t));
       }
     }
-  }
-  const cellsAround = (x: number, z: number, r: number): string[] => {
-    const keys: string[] = [];
-    const cx = Math.floor(x / CELL);
-    const cz = Math.floor(z / CELL);
-    const rc = Math.ceil(r / CELL);
-    for (let i = -rc; i <= rc; i++) for (let j = -rc; j <= rc; j++) keys.push(`${cx + i},${cz + j}`);
-    return keys;
+    return [...keys];
   };
+
+  function addTile(key: string, tile: TileData): void {
+    if (tileEdges.has(key)) return;
+    const ids: number[] = [];
+    for (const [id, x, z] of tile.nodes) {
+      nodeRef.set(id, (nodeRef.get(id) ?? 0) + 1);
+      if (!nodes.has(id)) {
+        nodes.set(id, [x, z]);
+        const k = cellKey(x, z);
+        let s = nodeGrid.get(k);
+        if (!s) {
+          s = new Set();
+          nodeGrid.set(k, s);
+        }
+        s.add(id);
+      }
+    }
+    for (const d of tile.edges) {
+      if (edges.has(d.id)) continue;
+      const cum = [0];
+      for (let i = 2; i < d.pts.length; i += 2) cum.push(cum[cum.length - 1] + Math.hypot(d.pts[i] - d.pts[i - 2], d.pts[i + 1] - d.pts[i - 1]));
+      const lanesTotal = d.lb === 0 ? d.lf : d.lf + d.lb;
+      const rank = CLASS_RANK[d.cls] ?? 6;
+      const laneW = rank >= 6 ? 2.6 : LANE_W;
+      const width = lanesTotal * laneW;
+      const e: Edge = { ...d, cum, len: cum[cum.length - 1] || d.len, width, half: width / 2, rank, laneW, tile: key };
+      edges.set(e.id, e);
+      ids.push(e.id);
+      totalLen += e.len;
+      for (const n of [e.a, e.b]) {
+        let list = out.get(n);
+        if (!list) {
+          list = [];
+          out.set(n, list);
+        }
+        list.push(e.id);
+      }
+      for (const k of edgeCells(e)) {
+        let s = edgeGrid.get(k);
+        if (!s) {
+          s = new Set();
+          edgeGrid.set(k, s);
+        }
+        s.add(e.id);
+      }
+    }
+    tileEdges.set(key, ids);
+    bump();
+  }
+
+  function removeTile(key: string): void {
+    const ids = tileEdges.get(key);
+    if (!ids) return;
+    tileEdges.delete(key);
+    const touched = new Set<Node>();
+    for (const id of ids) {
+      const e = edges.get(id);
+      if (!e) continue;
+      edges.delete(id);
+      totalLen -= e.len;
+      for (const n of [e.a, e.b]) {
+        const list = out.get(n);
+        if (list) {
+          const i = list.indexOf(id);
+          if (i >= 0) list.splice(i, 1);
+          if (!list.length) out.delete(n);
+        }
+        touched.add(n);
+      }
+      for (const k of edgeCells(e)) edgeGrid.get(k)?.delete(id);
+    }
+    for (const n of touched) {
+      const r = (nodeRef.get(n) ?? 1) - 1;
+      if (r > 0) {
+        nodeRef.set(n, r);
+        continue;
+      }
+      nodeRef.delete(n);
+      const p = nodes.get(n);
+      if (p) nodeGrid.get(cellKey(p[0], p[1]))?.delete(n);
+      nodes.delete(n);
+      out.delete(n);
+    }
+    bump();
+  }
 
   const pointAt = (e: Edge, dir: Dir, s: number): PointOn => {
     const sa = dir === 1 ? s : e.len - s;
@@ -169,21 +252,29 @@ export function buildGraph(map: MapData): RoadGraph {
       const d = Math.hypot(x - px, z - pz);
       if (d < best.d) {
         const l = Math.sqrt(l2);
-        // 오른쪽(+): 진행 방향 (dx,dz) 의 오른쪽 = (-dz, dx)
         const side = ((x - px) * -dz + (z - pz) * dx) / l;
         best = { e, s: e.cum[i / 2] + l * t, d, side };
       }
     }
     return best;
   }
+  const cellsAround = (x: number, z: number, r: number): string[] => {
+    const keys: string[] = [];
+    const cx = Math.floor(x / CELL);
+    const cz = Math.floor(z / CELL);
+    const rc = Math.ceil(r / CELL);
+    for (let i = -rc; i <= rc; i++) for (let j = -rc; j <= rc; j++) keys.push(`${cx + i},${cz + j}`);
+    return keys;
+  };
 
-  // ----- 다익스트라 -----
-  function dijkstra(from: Node, to: Node): { prev: Int32Array; prevEdge: Int32Array; dist: Float64Array } | null {
-    const dist = new Float64Array(nodes.length).fill(Infinity);
-    const prev = new Int32Array(nodes.length).fill(-1);
-    const prevEdge = new Int32Array(nodes.length).fill(-1);
+  // ----- 다익스트라 (로드된 영역 안) -----
+  function dijkstra(from: Node, to: Node): { prev: Map<Node, Node>; prevEdge: Map<Node, number>; dist: Map<Node, number> } | null {
+    if (!nodes.has(from) || !nodes.has(to)) return null;
+    const dist = new Map<Node, number>();
+    const prev = new Map<Node, Node>();
+    const prevEdge = new Map<Node, number>();
     const heap: Array<[number, number]> = [[0, from]];
-    dist[from] = 0;
+    dist.set(from, 0);
     const push = (item: [number, number]) => {
       heap.push(item);
       let i = heap.length - 1;
@@ -215,19 +306,18 @@ export function buildGraph(map: MapData): RoadGraph {
     };
     while (heap.length) {
       const [d, n] = pop();
-      if (d > dist[n]) continue;
+      if (d > (dist.get(n) ?? Infinity)) continue;
       if (n === to) return { prev, prevEdge, dist };
-      for (const id of out[n]) {
-        const e = edges[id];
+      for (const id of out.get(n) ?? []) {
+        const e = edges.get(id)!;
         const dir: Dir = e.a === n ? 1 : -1;
         if (!(dir === 1 ? e.lf > 0 : e.lb > 0)) continue;
         const m = dir === 1 ? e.b : e.a;
-        // 좁은 길은 조금 비싸게 쳐서 큰길을 선호
         const w = e.len * (1 + e.rank * 0.08);
-        if (d + w < dist[m]) {
-          dist[m] = d + w;
-          prev[m] = n;
-          prevEdge[m] = id;
+        if (d + w < (dist.get(m) ?? Infinity)) {
+          dist.set(m, d + w);
+          prev.set(m, n);
+          prevEdge.set(m, id);
           push([d + w, m]);
         }
       }
@@ -236,17 +326,37 @@ export function buildGraph(map: MapData): RoadGraph {
   }
 
   const g: RoadGraph = {
-    map,
-    nodes,
-    edges,
-    out,
-    bbox: map.bbox,
-    start: map.start,
-    majorNodes,
-    totalLen,
-    pos: (n) => [nodes[n][0], nodes[n][1]],
+    index,
+    bbox: index.bbox,
+    start: index.start.node,
+    get edges() {
+      return edges.values();
+    },
+    get edgeCount() {
+      return edges.size;
+    },
+    get totalLen() {
+      return totalLen;
+    },
+    get majorNodes() {
+      if (!majorCache) {
+        majorCache = [];
+        for (const [n, list] of out) if (list.length >= 3 && list.some((id) => (edges.get(id)?.rank ?? 9) <= 6)) majorCache.push(n);
+      }
+      return majorCache;
+    },
+    get version() {
+      return version;
+    },
+    has: (n) => nodes.has(n),
+    hasEdge: (id) => edges.has(id),
+    edge: (id) => edges.get(id),
+    pos(n) {
+      const p = nodes.get(n);
+      return p ? [p[0], p[1]] : [0, 0];
+    },
     degree,
-    edgesAt: (n) => out[n].map((id) => edges[id]),
+    edgesAt: (n) => (out.get(n) ?? []).map((id) => edges.get(id)!),
     otherEnd: (e, n) => (e.a === n ? e.b : e.a),
     dirInto: (e, n) => (e.b === n ? 1 : -1),
     canTravel: (e, dir) => (dir === 1 ? e.lf > 0 : e.lb > 0),
@@ -254,24 +364,24 @@ export function buildGraph(map: MapData): RoadGraph {
     laneOffset(e, dir, lane) {
       const n = dir === 1 ? e.lf : e.lb;
       const i = Math.min(Math.max(0, lane), n - 1);
-      if (e.lb === 0) return (i + 0.5 - n / 2) * e.laneW; // 일방통행은 도로 전체를 쓴다
+      if (e.lb === 0) return (i + 0.5 - n / 2) * e.laneW;
       return (i + 0.5) * e.laneW;
     },
     pointAt,
     cut(e, n) {
       if (degree(n) < 3) return 0;
-      // 교차로의 다른 길 폭만큼 들어가서 곡선을 시작한다
       let w = 0;
-      for (const id of out[n]) if (id !== e.id) w = Math.max(w, edges[id].half);
+      for (const id of out.get(n) ?? []) if (id !== e.id) w = Math.max(w, edges.get(id)!.half);
       return Math.min(w + 2, e.len * 0.35);
     },
     nearestNode(x, z) {
-      let best = 0;
+      let best = -1;
       let bd = Infinity;
       for (let r = 1; r <= 8; r++) {
         for (const k of cellsAround(x, z, r * CELL)) {
           for (const i of nodeGrid.get(k) ?? []) {
-            const d = Math.hypot(nodes[i][0] - x, nodes[i][1] - z);
+            const p = nodes.get(i)!;
+            const d = Math.hypot(p[0] - x, p[1] - z);
             if (d < bd) {
               bd = d;
               best = i;
@@ -280,16 +390,16 @@ export function buildGraph(map: MapData): RoadGraph {
         }
         if (bd < r * CELL) return best;
       }
-      if (bd === Infinity) {
-        nodes.forEach(([nx, nz], i) => {
-          const d = Math.hypot(nx - x, nz - z);
+      if (best < 0) {
+        for (const [i, p] of nodes) {
+          const d = Math.hypot(p[0] - x, p[1] - z);
           if (d < bd) {
             bd = d;
             best = i;
           }
-        });
+        }
       }
-      return best;
+      return best < 0 ? index.start.node : best;
     },
     nearestEdge(x, z, maxD = 60) {
       let best: EdgeHit | null = null;
@@ -298,7 +408,7 @@ export function buildGraph(map: MapData): RoadGraph {
         for (const id of edgeGrid.get(k) ?? []) {
           if (seen.has(id)) continue;
           seen.add(id);
-          const hit = projectOnEdge(edges[id], x, z);
+          const hit = projectOnEdge(edges.get(id)!, x, z);
           if (hit.d <= maxD && (!best || hit.d < best.d)) best = hit;
         }
       }
@@ -310,25 +420,61 @@ export function buildGraph(map: MapData): RoadGraph {
       if (!r) return [];
       const steps: Step[] = [];
       let n = to;
-      while (n !== from && r.prev[n] >= 0) {
-        const e = edges[r.prevEdge[n]];
+      while (n !== from && r.prev.has(n)) {
+        const e = edges.get(r.prevEdge.get(n)!)!;
         steps.push({ e, dir: e.b === n ? 1 : -1 });
-        n = r.prev[n];
+        n = r.prev.get(n)!;
       }
       return steps.reverse();
     },
     dist(from, to) {
       const r = dijkstra(from, to);
-      return r ? r.dist[to] : Infinity;
+      return r ? (r.dist.get(to) ?? Infinity) : Infinity;
     },
-    randomNode: () => majorNodes[Math.floor(Math.random() * majorNodes.length)] ?? 0,
-    randomEdge() {
+    randomNode(near) {
+      const major = g.majorNodes;
+      if (!major.length) return index.start.node;
+      if (!near) return major[Math.floor(Math.random() * major.length)];
+      for (let tries = 0; tries < 40; tries++) {
+        const n = major[Math.floor(Math.random() * major.length)];
+        const [x, z] = nodes.get(n)!;
+        const d = Math.hypot(x - near.x, z - near.z);
+        if (d >= near.min && d <= near.max) return n;
+      }
+      // 조건에 맞는 게 없으면 가장 가까운 후보
+      let best = major[0];
+      let bd = Infinity;
+      for (const n of major) {
+        const [x, z] = nodes.get(n)!;
+        const d = Math.abs(Math.hypot(x - near.x, z - near.z) - (near.min + near.max) / 2);
+        if (d < bd) {
+          bd = d;
+          best = n;
+        }
+      }
+      return best;
+    },
+    randomEdge(near) {
+      if (!edgeArrCache) edgeArrCache = [...edges.values()];
+      const arr = edgeArrCache;
+      if (!arr.length) throw new Error('로드된 도로가 없어요');
+      if (near) {
+        for (let tries = 0; tries < 60; tries++) {
+          const e = arr[Math.floor(Math.random() * arr.length)];
+          if (Math.hypot(e.pts[0] - near.x, e.pts[1] - near.z) <= near.r) return e;
+        }
+      }
       let r = Math.random() * totalLen;
-      for (const e of edges) {
+      for (const e of arr) {
         r -= e.len;
         if (r <= 0) return e;
       }
-      return edges[edges.length - 1];
+      return arr[arr.length - 1];
+    },
+    addTile,
+    removeTile,
+    onChange(fn) {
+      listeners.push(fn);
     },
   };
   return g;

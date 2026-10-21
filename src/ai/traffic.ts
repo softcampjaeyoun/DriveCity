@@ -59,6 +59,8 @@ export interface Npc {
   racing: boolean;
   cool: number;
   police: PoliceState | null;
+  /** 이 차를 낳은 타일. 타일이 내려가면 같이 사라진다. 라이벌·경찰은 null (항상 유지) */
+  tile: string | null;
 }
 
 export const RIVALS: readonly RivalSpec[] = [
@@ -75,6 +77,9 @@ export interface TrafficEvents {
 export interface Traffic {
   npcs: Npc[];
   police: Npc[];
+  /** 타일이 들어오면 그 타일 도로 길이에 비례해 차를 뿌린다 */
+  addTile(key: string, roadLen: number, cx: number, cz: number): void;
+  removeTile(key: string): void;
   update(dt: number, player: PlayerState, racePace: (n: Npc) => number, chasePace: number): void;
   collidePlayer(S: PlayerState): void;
   nearbyRival(S: PlayerState, range?: number): Npc | null;
@@ -132,7 +137,7 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
   function chooseStep(n: Npc, seg: EdgeSeg): Step {
     const node = seg.node;
     const r = n.route[0];
-    if (r && edgeStartNode(r) === node && g.canTravel(r.e, r.dir)) {
+    if (r && edgeStartNode(r) === node && g.hasEdge(r.e.id) && g.canTravel(r.e, r.dir)) {
       n.route.shift();
       return r;
     }
@@ -150,9 +155,9 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
       opts.push({ st: { e, dir }, w });
     }
     if (!opts.length) {
-      // 막다른 길: 유턴
+      // 막다른 길(또는 아직 안 들어온 타일 경계): 유턴
       if (g.canTravel(seg.e, (seg.dir * -1) as Dir)) return { e: seg.e, dir: (seg.dir * -1) as Dir };
-      const e = g.edgesAt(node)[0];
+      const e = g.edgesAt(node)[0] ?? seg.e;
       return { e, dir: e.a === node ? 1 : -1 };
     }
     let total = opts.reduce((s, o) => s + o.w, 0);
@@ -182,12 +187,12 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
     n.latTarget = g.laneOffset(seg.e, seg.dir, lane);
   }
 
-  function spawn(kind: VehicleKind, hex: number, rival: RivalSpec | null, index = 0): Npc {
+  function spawn(kind: VehicleKind, hex: number, rival: RivalSpec | null, index = 0, near?: { x: number; z: number; r: number }, tile: string | null = null): Npc {
     let e: Edge;
     let dir: Dir;
     let guard = 0;
     do {
-      e = g.randomEdge();
+      e = g.randomEdge(near);
       dir = Math.random() < 0.5 ? 1 : -1;
       if (!g.canTravel(e, dir)) dir = (dir * -1) as Dir;
     } while ((!g.canTravel(e, dir) || e.len < 20 || (kind.length > 8 && e.rank >= 6)) && guard++ < 200);
@@ -220,6 +225,7 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
       racing: false,
       cool: 0,
       police: built.police,
+      tile,
     };
     n.latTarget = n.lat;
     planNext(n, seg);
@@ -231,15 +237,35 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
     npcs.push(n);
     return n;
   }
-  // 도로 총연장에 맞춰 대수를 늘린다 (15km 기준 1배)
-  const scale = clamp(g.totalLen / 15000, 1, 9);
-  for (const [id, count] of TRAFFIC_MIX) {
-    const kind = KINDS[id];
-    const total = Math.round(count * scale);
-    for (let i = 0; i < total; i++) spawn(kind, kind.colors[i % kind.colors.length], null, i);
+  function despawn(n: Npc): void {
+    const i = npcs.indexOf(n);
+    if (i >= 0) npcs.splice(i, 1);
+    scene.remove(n.mesh);
   }
-  for (const r of RIVALS) spawn(KINDS.rival, r.body, r);
-  for (let i = 0; i < POLICE_COUNT + Math.round(scale); i++) police.push(spawn(KINDS.police, KINDS.police.colors[0], null, i));
+  /** 차가 서 있던 길이 사라졌을 때(타일 해제) 플레이어 근처 로드된 길로 옮긴다 */
+  function relocate(n: Npc, S: PlayerState): void {
+    let e: Edge;
+    let dir: Dir;
+    let guard = 0;
+    do {
+      e = g.randomEdge({ x: S.x, z: S.z, r: 700 });
+      dir = Math.random() < 0.5 ? 1 : -1;
+      if (!g.canTravel(e, dir)) dir = (dir * -1) as Dir;
+    } while ((!g.canTravel(e, dir) || e.len < 20 || Math.hypot(e.pts[0] - S.x, e.pts[1] - S.z) < 120) && guard++ < 100);
+    const seg = edgeSeg(g, e, dir);
+    n.seg = seg;
+    n.s = seg.s0 + Math.random() * seg.len;
+    n.node = seg.node;
+    n.route = [];
+    n.next = null;
+    n.lane = clamp(n.lane, 0, g.lanes(e, dir) - 1);
+    n.lat = n.latTarget = g.laneOffset(e, dir, n.lane);
+    planNext(n, seg);
+    [n.x, n.z] = segPos(g, seg, n.s, n.lat);
+    n.mesh.position.set(n.x, 0, n.z);
+  }
+  let persistentSpawned = false;
+  const DENSITY = 1.5; // 도로 1km 당 차량 대수 (3×3 타일 기준 300대 안팎)
 
   function advance(n: Npc): void {
     if (n.seg.kind === 'curve') {
@@ -366,8 +392,44 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
     npcs,
     police,
 
+    addTile(key, roadLen, cx, cz) {
+      const near = { x: cx, z: cz, r: 760 };
+      const total = Math.round((roadLen / 1000) * DENSITY);
+      const mixTotal = TRAFFIC_MIX.reduce((s, [, c]) => s + c, 0);
+      let i = 0;
+      for (const [id, count] of TRAFFIC_MIX) {
+        const kind = KINDS[id];
+        const n = Math.round((total * count) / mixTotal);
+        for (let k = 0; k < n; k++) spawn(kind, kind.colors[(i + k) % kind.colors.length], null, i + k, near, key);
+        i += n;
+      }
+      if (!persistentSpawned) {
+        persistentSpawned = true;
+        for (const r of RIVALS) spawn(KINDS.rival, r.body, r, 0, near);
+        for (let k = 0; k < POLICE_COUNT; k++) police.push(spawn(KINDS.police, KINDS.police.colors[0], null, k, near));
+      }
+    },
+
+    removeTile(key) {
+      for (const n of npcs.slice()) if (n.tile === key) despawn(n);
+    },
+
     update(dt, S, racePace, chasePace) {
-      for (const n of npcs) {
+      for (const n of npcs.slice()) {
+        // 서 있는 길이 사라졌으면(타일 해제) 일반 차는 없애고, 라이벌·경찰은 옮긴다
+        const curEdge = n.seg.kind === 'edge' ? n.seg.e : n.next?.e;
+        if (curEdge && !g.hasEdge(curEdge.id)) {
+          if (n.tile !== null) {
+            despawn(n);
+            continue;
+          }
+          relocate(n, S);
+        }
+        if (n.next && !g.hasEdge(n.next.e.id)) {
+          n.next = null;
+          n.route = [];
+          if (n.seg.kind === 'edge') planNext(n, n.seg);
+        }
         let want: number;
         const chasing = !!n.police?.chasing;
         const onCurve = n.seg.kind === 'curve';

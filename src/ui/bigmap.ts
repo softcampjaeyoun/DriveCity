@@ -1,7 +1,8 @@
 import type { Npc } from '../ai/traffic.ts';
 import type { RoadGraph } from '../world/graph.ts';
+import { MAP_BASE } from '../world/mapdata.ts';
 import type { PlayerState } from '../vehicle/player.ts';
-import type { MapPoint, Minimap } from './minimap.ts';
+import type { MapPoint } from './minimap.ts';
 
 /** 미니맵을 누르거나 Tab 을 누르면 화면 가득 펼쳐지는 지도. 우클릭(또는 가운데 버튼) 드래그로 이동, 휠로 확대·축소, 더블클릭으로 원위치 */
 export interface BigMap {
@@ -10,7 +11,10 @@ export interface BigMap {
   draw(t: number, S: PlayerState, npcs: Npc[], target: MapPoint | null, extra: MapPoint[]): void;
 }
 
-export function createBigMap(root: HTMLElement, mini: Minimap, g: RoadGraph, placeOf: (x: number, z: number) => string): BigMap {
+export function createBigMap(root: HTMLElement, g: RoadGraph, placeOf: (x: number, z: number) => string): BigMap {
+  // 전체 지도는 빌드 때 만든 overview.png 를 배경으로 쓴다
+  const overview = new Image();
+  overview.src = `${MAP_BASE}${g.index.overview.file}`;
   const canvas = document.createElement('canvas');
   const label = document.createElement('div');
   label.className = 'bigmap-label';
@@ -31,7 +35,6 @@ export function createBigMap(root: HTMLElement, mini: Minimap, g: RoadGraph, pla
   root.append(canvas, zoomBox, label);
   const ctx = canvas.getContext('2d')!;
   let open = false;
-  const bg = mini.background;
   const { minX, maxX, minZ, maxZ } = g.bbox;
   // 보기 상태: 중심(월드 좌표)과 배율(화면 px / m)
   const OPEN_ZOOM = 2.5;
@@ -171,11 +174,9 @@ export function createBigMap(root: HTMLElement, mini: Minimap, g: RoadGraph, pla
       const toView = (x: number, z: number): [number, number] => [ox + (x - minX) * scale, oz + (z - minZ) * scale];
       ctx.fillStyle = '#0b0e16';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-      const bgScale = mini.scale;
-      const [sx, sz] = mini.toBg(minX, minZ);
       const [vx, vz] = toView(minX, minZ);
       ctx.imageSmoothingEnabled = true;
-      ctx.drawImage(bg, sx, sz, (maxX - minX) * bgScale, (maxZ - minZ) * bgScale, vx, vz, (maxX - minX) * scale, (maxZ - minZ) * scale);
+      if (overview.complete && overview.naturalWidth) ctx.drawImage(overview, vx, vz, (maxX - minX) * scale, (maxZ - minZ) * scale);
       const dot = (x: number, z: number, r: number, color: string) => {
         const [px, pz] = toView(x, z);
         ctx.fillStyle = color;
@@ -205,7 +206,7 @@ export function createBigMap(root: HTMLElement, mini: Minimap, g: RoadGraph, pla
       ctx.font = '600 13px "IBM Plex Sans KR", sans-serif';
       ctx.fillStyle = 'rgba(233,237,246,0.85)';
       ctx.textAlign = 'center';
-      for (const p of g.map.places) {
+      for (const p of g.index.places) {
         const [x, z] = toView(p.x, p.z);
         ctx.fillText(p.name, x, z);
       }

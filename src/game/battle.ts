@@ -64,10 +64,7 @@ export function createBattle(g: RoadGraph, traffic: Traffic, ev: BattleEvents): 
       if (active) return false;
       const r = traffic.nearbyRival(S);
       if (!r?.rival) return false;
-      let goal = g.randomNode();
-      let tries = 0;
-      const far = () => Math.hypot(g.pos(goal)[0] - S.x, g.pos(goal)[1] - S.z);
-      while ((far() < 300 || far() > 800) && tries++ < 80) goal = g.randomNode();
+      const goal = g.randomNode({ x: S.x, z: S.z, min: 300, max: 800 });
       active = true;
       rival = r;
       [tx, tz] = g.pos(goal);

@@ -29,6 +29,7 @@ export interface MissionSpot {
 }
 
 export interface Missions {
+  /** 플레이어 주변에 유지되는 거점 (최대 SPOTS 개). 타일이 바뀌면 교체된다 */
   readonly spots: MissionSpot[];
   readonly active: MissionDef | null;
   readonly target: { x: number; z: number } | null;
@@ -41,58 +42,48 @@ export interface Missions {
 }
 
 const TYPE_NAME: Record<MissionType, string> = { delivery: '퀵 배달', taxi: '택시 손님', sprint: '스프린트' };
+export const SPOTS = 4;
 
 export function createMissions(g: RoadGraph, ev: MissionEvents): Missions {
-  // 미션 거점: 지도 네 구역의 중심에 가까운 큰 교차로
-  const { minX, maxX, minZ, maxZ } = g.bbox;
   const spots: MissionSpot[] = [];
-  for (const [fx, fz] of [
-    [0.28, 0.28],
-    [0.72, 0.3],
-    [0.3, 0.72],
-    [0.7, 0.7],
-  ]) {
-    const cx = minX + (maxX - minX) * fx;
-    const cz = minZ + (maxZ - minZ) * fz;
-    let best = g.majorNodes[0];
-    let bd = Infinity;
-    for (const n of g.majorNodes) {
-      const [x, z] = g.pos(n);
-      const d = Math.hypot(x - cx, z - cz);
-      if (d < bd && spots.every((s) => Math.hypot(s.x - x, s.z - z) > 300)) {
-        bd = d;
-        best = n;
-      }
-    }
-    const [x, z] = g.pos(best);
-    spots.push({ node: best, x, z, cool: 0 });
-  }
-
   let active: MissionDef | null = null;
   let idx = 0;
   let timeLeft = 0;
   let satisfaction: number | null = null;
   let lastSpot: MissionSpot | null = null;
   let typeCursor = 0;
+  let spotTimer = 0;
 
-  /** 직선 거리로 후보를 추리고 그래프 거리로 확정 */
+  /** 사라진 거점을 빼고, 플레이어 300~900m 안의 큰 교차로로 채운다 */
+  function refreshSpots(S: PlayerState): void {
+    for (let i = spots.length - 1; i >= 0; i--) {
+      const sp = spots[i];
+      if (!g.has(sp.node) || Math.hypot(sp.x - S.x, sp.z - S.z) > 1600) spots.splice(i, 1);
+    }
+    let guard = 0;
+    while (spots.length < SPOTS && guard++ < 30) {
+      const n = g.randomNode({ x: S.x, z: S.z, min: 300, max: 900 });
+      const [x, z] = g.pos(n);
+      if (spots.some((s) => s.node === n || Math.hypot(s.x - x, s.z - z) < 250)) continue;
+      if (Math.hypot(x - S.x, z - S.z) < 250) continue;
+      spots.push({ node: n, x, z, cool: 0 });
+    }
+  }
+
+  /** 그래프 거리 기준으로 min~max 떨어진 목적지 */
   function farNode(from: Node, min: number, max: number): { node: Node; d: number } {
     const [fx, fz] = g.pos(from);
-    const cands: Node[] = [];
-    for (let tries = 0; tries < 80 && cands.length < 6; tries++) {
-      const n = g.randomNode();
-      const d = Math.hypot(g.pos(n)[0] - fx, g.pos(n)[1] - fz);
-      if (d >= min * 0.7 && d <= max * 0.95 && n !== from) cands.push(n);
-    }
     let best: { node: Node; d: number } | null = null;
-    for (const n of cands) {
+    for (let tries = 0; tries < 8; tries++) {
+      const n = g.randomNode({ x: fx, z: fz, min: min * 0.7, max: max * 0.95 });
+      if (n === from) continue;
       const d = g.dist(from, n);
       if (!Number.isFinite(d)) continue;
       const ok = d >= min && d <= max;
       if (!best || (ok && !(best.d >= min && best.d <= max)) || (ok === (best.d >= min && best.d <= max) && Math.abs(d - (min + max) / 2) < Math.abs(best.d - (min + max) / 2))) best = { node: n, d };
     }
     if (best) return best;
-    const n = g.randomNode();
+    const n = g.randomNode({ x: fx, z: fz, min, max });
     return { node: n, d: Math.hypot(g.pos(n)[0] - fx, g.pos(n)[1] - fz) * 1.3 };
   }
 
@@ -112,9 +103,7 @@ export function createMissions(g: RoadGraph, ev: MissionEvents): Missions {
     }
     const { node, d } = farNode(spot.node, 350, 900);
     const dest = placeName(g, node);
-    if (type === 'taxi') {
-      return { type, title: `손님: ${dest}까지`, targets: [node], timeLimit: Math.round(d / 12 + 25), reward: Math.round(d * 1.8 + 200), xp: Math.round(d / 6) };
-    }
+    if (type === 'taxi') return { type, title: `손님: ${dest}까지`, targets: [node], timeLimit: Math.round(d / 12 + 25), reward: Math.round(d * 1.8 + 200), xp: Math.round(d / 6) };
     return { type, title: `퀵 배달: ${dest}`, targets: [node], timeLimit: Math.round(d / 14 + 20), reward: Math.round(d * 1.4 + 200), xp: Math.round(d / 7) };
   }
 
@@ -127,14 +116,8 @@ export function createMissions(g: RoadGraph, ev: MissionEvents): Missions {
       const bonus = satisfaction !== null && satisfaction >= 90 ? Math.round(def.reward * 0.25) : 0;
       addCredits(reward + bonus);
       const lv = addXp(def.xp);
-      ev.toast(
-        `${TYPE_NAME[def.type]} 완료`,
-        `+${(reward + bonus).toLocaleString('ko-KR')} 크레딧${bonus ? ' (팁 포함)' : ''} · +${def.xp} XP${lv ? ` · 레벨 ${lv} 달성!` : ''}`,
-        3,
-      );
-    } else {
-      ev.toast(`${TYPE_NAME[def.type]} 실패`, why, 2.6);
-    }
+      ev.toast(`${TYPE_NAME[def.type]} 완료`, `+${(reward + bonus).toLocaleString('ko-KR')} 크레딧${bonus ? ' (팁 포함)' : ''} · +${def.xp} XP${lv ? ` · 레벨 ${lv} 달성!` : ''}`, 3);
+    } else ev.toast(`${TYPE_NAME[def.type]} 실패`, why, 2.6);
     if (lastSpot) lastSpot.cool = 25;
     active = null;
     satisfaction = null;
@@ -148,7 +131,9 @@ export function createMissions(g: RoadGraph, ev: MissionEvents): Missions {
     },
     get target() {
       if (!active) return null;
-      const [x, z] = g.pos(active.targets[idx]);
+      const n = active.targets[idx];
+      if (!g.has(n)) return null;
+      const [x, z] = g.pos(n);
       return { x, z };
     },
     get timeLeft() {
@@ -167,6 +152,11 @@ export function createMissions(g: RoadGraph, ev: MissionEvents): Missions {
 
     update(dt, S, crash, hit) {
       for (const sp of spots) if (sp.cool > 0) sp.cool -= dt;
+      spotTimer -= dt;
+      if (spotTimer <= 0) {
+        spotTimer = 2;
+        if (!active) refreshSpots(S);
+      }
       if (!active) {
         const speed = Math.hypot(S.vx, S.vz);
         for (const sp of spots) {
@@ -191,7 +181,9 @@ export function createMissions(g: RoadGraph, ev: MissionEvents): Missions {
         finish(false, '시간이 다 됐어요');
         return;
       }
-      const [tx, tz] = g.pos(active.targets[idx]);
+      const n = active.targets[idx];
+      if (!g.has(n)) return; // 목적지 타일이 아직 안 들어왔으면 기다린다
+      const [tx, tz] = g.pos(n);
       if (Math.hypot(tx - S.x, tz - S.z) < 10) {
         idx++;
         if (idx >= active.targets.length) finish(true, '');

@@ -4,7 +4,8 @@ import { createAudio, type EngineAudio } from './audio.ts';
 import { createChaseCamera } from './camera.ts';
 import { coarse } from './config.ts';
 import { createBattle } from './game/battle.ts';
-import { createMissions } from './game/missions.ts';
+import { createMissions, SPOTS } from './game/missions.ts';
+import { createPedestrians } from './ai/pedestrians.ts';
 import { createRun } from './game/run.ts';
 import { addCredits, addXp, levelInfo, persist, save } from './game/save.ts';
 import { CHASE_PACE, createWanted } from './game/wanted.ts';
@@ -20,12 +21,13 @@ import { createHud } from './ui/hud.ts';
 import { createMinimap, type MapPoint } from './ui/minimap.ts';
 import { createPlayer } from './vehicle/player.ts';
 import { CARS, computeStats, emptyParts, partsLevel, type CarSpec, type CarStats } from './vehicle/stats.ts';
-import { buildCity } from './world/city.ts';
+import { createCity, type TileScene } from './world/city.ts';
 import { createCollisionWorld } from './world/collision.ts';
-import { buildGraph } from './world/graph.ts';
-import { loadMap } from './world/mapdata.ts';
+import { createGraph, type Edge } from './world/graph.ts';
+import { loadIndex, type TileData } from './world/mapdata.ts';
 import { createMarker } from './world/markers.ts';
 import { createSignals } from './world/signals.ts';
+import { createTileManager } from './world/tiles.ts';
 
 if (coarse) document.documentElement.classList.add('coarse');
 
@@ -41,22 +43,30 @@ const { scene, camera } = stage;
 const hud = createHud();
 // 간판·광고판 글씨를 캔버스에 그리니 한글 웹폰트를 먼저 기다린다
 await Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, 2500))]);
-const map = await loadMap();
-const graph = buildGraph(map);
+const index = await loadIndex();
+const graph = createGraph(index);
 const signals = createSignals(scene, graph);
-const city = buildCity(scene, map, graph, signals.has);
-const world = createCollisionWorld(map, graph);
-world.addObstacles(city.obstacles);
-world.addObstacles(signals.poles.map(([x, z]) => ({ x, z, r: 0.16 })));
+const city = createCity(scene, index);
+const world = createCollisionWorld(graph);
+const minimap = createMinimap(document.getElementById('minimap') as HTMLCanvasElement, graph);
+const pedestrians = createPedestrians(scene);
+// 타일이 들어오고 나갈 때 각 시스템에 알린다. traffic 은 아래에서 만들어지므로 늦게 묶는다
+let onTileAdd: (key: string, tile: TileData) => void = () => {};
+let onTileRemove: (key: string) => void = () => {};
+const tiles = createTileManager(index, graph, { onAdd: (k, t) => onTileAdd(k, t), onRemove: (k) => onTileRemove(k) });
+goBtn.textContent = '주변 거리를 만드는 중…';
+await tiles.warmup(index.start.x, index.start.z);
 const player = createPlayer(scene, graph);
-const minimap = createMinimap(document.getElementById('minimap') as HTMLCanvasElement, map, graph);
-const bigmap = createBigMap(document.getElementById('bigmap') as HTMLElement, minimap, graph, (x, z) => placeName(graph, graph.nearestNode(x, z)));
+const bigmap = createBigMap(document.getElementById('bigmap') as HTMLElement, graph, (x, z) => placeName(graph, graph.nearestNode(x, z)));
 document.getElementById('mapwrap')!.addEventListener('click', () => bigmap.toggle());
 const chase = createChaseCamera(camera, (x, z, r) => world.push({ x, z, r }, false));
 const input = createInput();
 const marker = createMarker(scene, COLOR.run);
 const weather = createWeather(scene, city, (b, s) => hud.toast(b, s, 2.4));
-const daylight = createDaylight(stage, (n) => city.setNight(n));
+const daylight = createDaylight(stage, (n) => {
+  city.setNight(n);
+  pedestrians.setNight(n);
+});
 stage.setBloom(save.settings.fx);
 
 let started = false;
@@ -89,11 +99,34 @@ const traffic = createTraffic(scene, graph, signals, {
 });
 const battle = createBattle(graph, traffic, { toast, pauseRun: () => run.pause(), resumeRun: () => run.resume() });
 const missions = createMissions(graph, { toast, onStart: () => run.pause(), onEnd: () => run.resume() });
-const spotMarkers = missions.spots.map((sp) => {
-  const m = createMarker(scene, COLOR.mission, 2.5);
-  m.setPosition(sp.x, sp.z);
-  return m;
-});
+const spotMarkers = Array.from({ length: SPOTS }, () => createMarker(scene, COLOR.mission, 2.5));
+
+// 타일 ↔ 시스템 연결. 순서: 그래프(이미 들어감) → 신호 → 도시 → 충돌 → 미니맵 → 교통 → 보행자
+const tileScenes = new Map<string, TileScene>();
+onTileAdd = (key, tile) => {
+  const poles = signals.addTile(key, tile);
+  const ts = city.buildTile(key, tile, graph, signals.has);
+  tileScenes.set(key, ts);
+  world.addTile(key, tile, [...ts.obstacles, ...poles.map(([x, z]) => ({ x, z, r: 0.16 }))]);
+  minimap.addTile(key, tile);
+  const info = index.tiles.find((t) => t.i === tile.i && t.j === tile.j);
+  traffic.addTile(key, info?.roadLen ?? 0, index.bbox.minX + (tile.i + 0.5) * index.tile, index.bbox.minZ + (tile.j + 0.5) * index.tile);
+  pedestrians.addTile(key, ts);
+};
+onTileRemove = (key) => {
+  pedestrians.removeTile(key);
+  traffic.removeTile(key);
+  minimap.removeTile(key);
+  world.removeTile(key);
+  city.removeTile(key);
+  tileScenes.delete(key);
+  signals.removeTile(key);
+};
+// warmup 때 들어온 타일은 traffic 이 없어서 못 받았으니 지금 연결한다
+for (const key of tiles.loaded) {
+  const tile = tiles.tileData(key);
+  if (tile) onTileAdd(key, tile);
+}
 const garage = createGarage(document.getElementById('garage') as HTMLElement, {
   onChange(spec, stats, car) {
     carSpec = spec;
@@ -185,7 +218,7 @@ function checkRedLight(): void {
   const speed = Math.hypot(S.vx, S.vz);
   if (speed < 4 || !signals.has(n)) return;
   // 진입한 길: 내 진행 방향과 가장 나란한 접근 간선
-  let best = null as null | { e: (typeof graph.edges)[number]; dir: 1 | -1 };
+  let best = null as null | { e: Edge; dir: 1 | -1 };
   let bd = 0.5;
   for (const e of graph.edgesAt(n)) {
     const dir = graph.dirInto(e, n);
@@ -204,7 +237,7 @@ function checkRedLight(): void {
 // debugCam 을 채우면 추적 카메라 대신 그 위치에서 본다 (항공 샷)
 const dbg = { debugCam: null as null | { x: number; y: number; z: number; lx: number; lz: number } };
 if (import.meta.env.DEV) {
-  (window as unknown as { __dc: unknown }).__dc = { player, traffic, battle, run, garage, save, graph, signals, wanted, missions, weather, map, dbg, scene, world, camera, daylight, chase, city };
+  (window as unknown as { __dc: unknown }).__dc = { player, traffic, battle, run, garage, save, graph, signals, wanted, missions, weather, index, tiles, dbg, scene, world, camera, daylight, chase, city, tileScenes, pedestrians };
 }
 
 // ----- 루프 -----
@@ -217,6 +250,7 @@ function frame(now: number): void {
   const inp = started && !garage.open && !bigmap.open ? input.read() : IDLE;
 
   lastHit = 0;
+  tiles.update(S.x, S.z);
   const r = player.step(dt, inp, carStats, world, () => traffic.collidePlayer(S));
   if (player.fell) {
     player.reset();
@@ -226,6 +260,7 @@ function frame(now: number): void {
   signals.update(t);
   const playerNode = graph.nearestNode(S.x, S.z);
   traffic.update(dt, S, (n) => battle.racePace(n, S), CHASE_PACE[wanted.stars]);
+  pedestrians.update(dt, S);
   if (started) {
     checkRedLight();
     wanted.update(dt, S, traffic.police);
@@ -247,7 +282,9 @@ function frame(now: number): void {
   marker.setColor(target.color);
   marker.update(t);
   spotMarkers.forEach((m, i) => {
-    m.setVisible(!missions.active && missions.spots[i].cool <= 0);
+    const sp = missions.spots[i];
+    if (sp) m.setPosition(sp.x, sp.z);
+    m.setVisible(!!sp && !missions.active && sp.cool <= 0);
     m.update(t);
   });
   city.update(t);
@@ -288,7 +325,7 @@ function frame(now: number): void {
     drift: player.driftTimer > 0 && player.driftScore > 5 ? player.driftScore : null,
     carName: carSpec.name,
     carLv,
-    status: started ? `${daylight.label} · ${weather.raining ? '비' : '맑음'} · 라디오 ${radio?.name ?? '꺼짐'} · 효과 ${stage.bloom ? '켬' : '끔'}` : '',
+    status: started ? `${daylight.label} · ${weather.raining ? '비' : '맑음'} · 라디오 ${radio?.name ?? '꺼짐'} · 효과 ${stage.bloom ? '켬' : '끔'} · 타일 ${tiles.loaded.size}${tiles.loading ? ` (+${tiles.loading} 받는 중)` : ''}` : '',
   });
   hud.tick(dt);
   const extra: MapPoint[] = missions.spots.filter((sp) => sp.cool <= 0 && !missions.active).map((sp) => ({ x: sp.x, z: sp.z, color: hex(COLOR.mission), r: 3.5 }));

@@ -1,8 +1,11 @@
-// tools/build-map.mjs 가 만드는 맵 파일 형식. 좌표는 미터, x = 동쪽, z = 남쪽
+// tools/build-map.mjs 가 만드는 타일 맵 형식. 좌표는 미터, x = 동쪽, z = 남쪽
 
 export type RoadClass = 'motorway' | 'trunk' | 'primary' | 'secondary' | 'tertiary' | 'unclassified' | 'residential' | 'living_street';
 
 export interface EdgeData {
+  /** 전역 간선 번호 */
+  id: number;
+  /** 전역 노드 번호 */
   a: number;
   b: number;
   /** [x0, z0, x1, z1, ...] a 에서 b 로 */
@@ -33,22 +36,51 @@ export interface PlaceData {
   rank: string;
 }
 
-export interface MapData {
+export interface TileInfo {
+  i: number;
+  j: number;
+  file: string;
+  edges: number;
+  buildings: number;
+  roadLen: number;
+}
+
+export interface MapIndex {
   origin: { lat: number; lon: number };
   bbox: { minX: number; maxX: number; minZ: number; maxZ: number };
-  start: number;
-  nodes: Array<[number, number]>;
+  tile: number;
+  start: { node: number; x: number; z: number };
+  places: PlaceData[];
+  tiles: TileInfo[];
+  overview: { file: string; scale: number; w: number; h: number };
+}
+
+export interface TileData {
+  i: number;
+  j: number;
+  /** [전역 번호, x, z] */
+  nodes: Array<[number, number, number]>;
   edges: EdgeData[];
   buildings: BuildingData[];
   water: number[][];
   parks: number[][];
   rails: number[][];
-  places: PlaceData[];
+  /** 신호등이 있는 노드 번호 */
   signals: number[];
 }
 
-export async function loadMap(url = `${import.meta.env.BASE_URL}map/seoul.json`): Promise<MapData> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`맵 파일을 못 읽었어요: ${res.status}`);
-  return (await res.json()) as MapData;
+export const MAP_BASE = `${import.meta.env.BASE_URL}map/seoul/`;
+
+export async function loadIndex(): Promise<MapIndex> {
+  const res = await fetch(`${MAP_BASE}index.json`);
+  if (!res.ok) throw new Error(`맵 index 를 못 읽었어요: ${res.status}`);
+  return (await res.json()) as MapIndex;
 }
+
+export async function loadTile(info: TileInfo): Promise<TileData> {
+  const res = await fetch(`${MAP_BASE}${info.file}`);
+  if (!res.ok) throw new Error(`타일을 못 읽었어요: ${info.file} ${res.status}`);
+  return (await res.json()) as TileData;
+}
+
+export const tileKey = (i: number, j: number): string => `${i}_${j}`;

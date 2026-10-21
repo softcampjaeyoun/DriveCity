@@ -36,8 +36,11 @@ const ATTEMPT_TIMEOUT = 240;
 const TILE_KM = 2.2;
 
 mkdirSync('data', { recursive: true });
-mkdirSync('data/tiles', { recursive: true });
+// 영역마다 타일 폴더를 따로 둬서 다른 영역의 타일과 섞이지 않게
+const TILE_DIR = `data/tiles/${south}_${west}_${north}_${east}`;
+mkdirSync(TILE_DIR, { recursive: true });
 writeFileSync('data/bbox.json', JSON.stringify({ south, west, north, east }));
+const OUT_RAW = process.env.OSM_OUT ?? 'data/osm-raw.json';
 
 // 타일 나누기
 const nx = Math.max(1, Math.ceil(((east - west) * kmLon) / TILE_KM));
@@ -59,8 +62,8 @@ console.log('[fetch] Overpass 서버가 혼잡하면 타일마다 몇 분 걸릴
 
 function attempt(url, tile) {
   return new Promise((resolve, reject) => {
-    const tmp = `data/tiles/${tile.id}.tmp`;
-    const qf = `data/tiles/${tile.id}.overpassql`;
+    const tmp = `${TILE_DIR}/${tile.id}.tmp`;
+    const qf = `${TILE_DIR}/${tile.id}.overpassql`;
     writeFileSync(qf, queryFor(tile.s, tile.w, tile.n, tile.e));
     if (existsSync(tmp)) unlinkSync(tmp);
     const t0 = Date.now();
@@ -96,7 +99,7 @@ function attempt(url, tile) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function fetchTile(tile) {
-  const out = `data/tiles/${tile.id}.json`;
+  const out = `${TILE_DIR}/${tile.id}.json`;
   if (existsSync(out)) {
     console.log(`[fetch] 타일 ${tile.id} 이미 있음`);
     return JSON.parse(readFileSync(out, 'utf8'));
@@ -140,8 +143,8 @@ for (const tile of tiles) {
   // 타일 사이에 잠깐 쉬어 서버를 배려
   if (tiles.length > 1) await sleep(3000);
 }
-writeFileSync('data/osm-raw.json', JSON.stringify({ version: 0.6, elements }));
+writeFileSync(OUT_RAW, JSON.stringify({ version: 0.6, elements }));
 const kinds = {};
 for (const e of elements) kinds[e.type] = (kinds[e.type] ?? 0) + 1;
-console.log('[fetch] 저장: data/osm-raw.json', kinds);
+console.log(`[fetch] 저장: ${OUT_RAW}`, kinds);
 console.log('[fetch] 다음: npm run map:build');

@@ -56,8 +56,7 @@ export const PROBE: readonly number[] = [1.3, -1.3];
 export const RADIUS = 1.15;
 
 export function createPlayer(scene: THREE.Scene, g: RoadGraph): Player {
-  const [sx, sz] = g.pos(g.start);
-  const S: PlayerState = { x: sx, z: sz, h: 0, vx: 0, vz: 0, steer: 0, nitro: 0.6, shake: 0, wheelSpin: 0 };
+  const S: PlayerState = { x: g.index.start.x, z: g.index.start.z, h: 0, vx: 0, vz: 0, steer: 0, nitro: 0.6, shake: 0, wheelSpin: 0 };
   const bounds = { minX: g.bbox.minX + 1.3, maxX: g.bbox.maxX - 1.3, minZ: g.bbox.minZ + 1.3, maxZ: g.bbox.maxZ - 1.3 };
   // 시작 교차로에서 큰길 방향을 보고 차선 위에 놓는다
   {
