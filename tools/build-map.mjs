@@ -336,7 +336,7 @@ if (vworldRaw) {
     else if (b.height > 2) h = b.height;
     else { h = area > 300 ? 9 + rnd() * 6 : 5 + rnd() * 4; noFloor++; }
     h = Math.round(Math.min(h, 560) * 10) / 10;
-    const apt = APT_RE.test(b.name) || (b.floors >= 12 && area > 350 && area < 2500);
+    const apt = APT_RE.test(b.name) || /아파트|공동주택|연립|다세대|기숙사/.test(b.use ?? '') || (b.floors >= 12 && area > 350 && area < 2500);
     buildings.push({ ring, h, kind: apt ? 'apt' : h > 30 ? 'tower' : area > 600 ? 'block' : 'low', name: b.name || '' });
   }
   console.log(`  V-World 건물 ${buildings.length}동 (층수 없음 ${noFloor}동은 추정)`);

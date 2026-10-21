@@ -5,8 +5,10 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 
 const KEY = process.env.VWORLD_KEY;
+// 개발키는 발급 때 등록한 서비스 URL 과 domain 이 같아야 통과한다 (예: www.drivecity.com)
+const DOMAIN = process.env.VWORLD_DOMAIN ?? 'www.drivecity.com';
 if (!KEY) {
-  console.error('[vworld] VWORLD_KEY 환경변수가 필요해요. 예) $env:VWORLD_KEY="..."; node tools/fetch-vworld.mjs 37.44 126.95 37.575 127.18');
+  console.error('[vworld] VWORLD_KEY 환경변수가 필요해요. 예) $env:VWORLD_KEY="..."; $env:VWORLD_DOMAIN="www.drivecity.com"; node tools/fetch-vworld.mjs 37.44 126.95 37.575 127.18');
   process.exit(1);
 }
 const [south, west, north, east] = process.argv.slice(2).length === 4 ? process.argv.slice(2).map(Number) : [37.517, 126.998, 37.539, 127.028];
@@ -25,9 +27,9 @@ console.log(`[vworld] 영역 ${south},${west} ~ ${north},${east}, 타일 ${tiles
 
 function get(url) {
   return new Promise((resolve, reject) => {
-    const tmp = `${DIR}/_resp.tmp`;
+    const tmp = `${DIR}/_resp_${process.pid}.tmp`;
     if (existsSync(tmp)) unlinkSync(tmp);
-    const child = spawn('curl', ['-sS', '--ssl-no-revoke', '-m', '120', '-A', 'driveCity/1.0', '-o', tmp, url]);
+    const child = spawn('curl', ['-sS', '--ssl-no-revoke', '-m', '120', '-A', 'driveCity/1.0', '-H', `Referer: http://${DOMAIN}/`, '-o', tmp, url]);
     let stderr = '';
     child.stderr.on('data', (d) => (stderr += d));
     child.on('close', (code) => {
@@ -52,7 +54,7 @@ async function fetchTile(tile) {
       request: 'GetFeature',
       data: 'LT_C_SPBD',
       key: KEY,
-      domain: 'localhost',
+      domain: DOMAIN,
       format: 'json',
       crs: 'EPSG:4326',
       geomFilter: `BOX(${tile.w},${tile.s},${tile.e},${tile.n})`,
@@ -106,7 +108,9 @@ for (const tile of tiles) {
         floors: Number(pick(p, /^(gro_flo_co|grnd_flr|ground_floor)/i) ?? 0) || 0,
         under: Number(pick(p, /^(und_flo_co|undgrnd_flr)/i) ?? 0) || 0,
         name: String(pick(p, /^(buld_nm|bld_nm)$/i) ?? '').trim(),
-        use: String(pick(p, /^(bdtyp_cd|buld_use|bld_use)/i) ?? ''),
+        // buld_nm_dc: "다가구용단독주택(9가구)", "아파트" 같은 용도 설명
+        use: String(pick(p, /^(buld_nm_dc|bdtyp_cd|buld_use|bld_use)/i) ?? '').trim(),
+        road: String(pick(p, /^rd_nm$/i) ?? '').trim(),
         height: Number(pick(p, /^(buld_hg|bld_hg|height)/i) ?? 0) || 0,
       });
     }
