@@ -19,6 +19,8 @@ export interface EdgeData {
   link: boolean;
   bridge: boolean;
   tunnel: boolean;
+  /** 높이 레벨: 0 지상, +1/+2 고가, -1/-2 지하차도 */
+  lv: number;
   name: string;
 }
 
@@ -68,8 +70,8 @@ export interface TileData {
   j: number;
   /** OSM 정류장·역·상점 (없을 수 있음) */
   pois?: PoiData[];
-  /** [전역 번호, x, z] */
-  nodes: Array<[number, number, number]>;
+  /** [전역 번호, x, z, 노면 높이 y] */
+  nodes: Array<[number, number, number, number]>;
   edges: EdgeData[];
   buildings: BuildingData[];
   water: number[][];

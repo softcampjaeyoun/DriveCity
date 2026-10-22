@@ -21,6 +21,9 @@ export interface CurveSeg {
   p0: Vec2;
   c: Vec2;
   p1: Vec2;
+  /** 양끝 노면 높이 (교차로 안에서 선형 보간) */
+  y0: number;
+  y1: number;
   len: number;
   turn: Turn;
 }
@@ -38,12 +41,16 @@ export function edgeSeg(g: RoadGraph, e: Edge, dir: Dir): EdgeSeg {
 
 export const rightOf = (hx: number, hz: number): [number, number] => [-hz, hx];
 
-/** 구간 위 위치. lat 은 중심선에서 오른쪽 거리 */
-export function segPos(g: RoadGraph, seg: Seg, s: number, lat: number): [number, number] {
-  if (seg.kind === 'curve') return bez(seg.p0, seg.c, seg.p1, clamp(s / seg.len, 0, 1));
+/** 구간 위 위치 [x, z, 노면 y]. lat 은 중심선에서 오른쪽 거리 */
+export function segPos(g: RoadGraph, seg: Seg, s: number, lat: number): [number, number, number] {
+  if (seg.kind === 'curve') {
+    const t = clamp(s / seg.len, 0, 1);
+    const [x, z] = bez(seg.p0, seg.c, seg.p1, t);
+    return [x, z, seg.y0 + (seg.y1 - seg.y0) * t];
+  }
   const p = g.pointAt(seg.e, seg.dir, clamp(s, 0, seg.e.len));
   const [rx, rz] = rightOf(p.hx, p.hz);
-  return [p.x + rx * lat, p.z + rz * lat];
+  return [p.x + rx * lat, p.z + rz * lat, p.y];
 }
 
 export function turnOf(h0x: number, h0z: number, h1x: number, h1z: number): Turn {
@@ -84,5 +91,5 @@ export function curveBetween(from: PointOn, lat0: number, to: PointOn, lat1: num
     px = qx;
     pz = qz;
   }
-  return { kind: 'curve', p0, c, p1, len: Math.max(0.5, len), turn };
+  return { kind: 'curve', p0, c, p1, y0: from.y, y1: to.y, len: Math.max(0.5, len), turn };
 }

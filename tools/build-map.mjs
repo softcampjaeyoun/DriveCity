@@ -118,7 +118,12 @@ for (const w of highwayWays) {
   lf = Math.max(1, Math.min(4, Math.round(lf)));
   lb = Math.max(0, Math.min(4, Math.round(lb)));
   const ids = reverse ? w.nodes.slice().reverse() : w.nodes;
-  const base = { cls, link, lf, lb, bridge: t.bridge === 'yes' || t.bridge === 'viaduct', tunnel: t.tunnel === 'yes', name: tagName(t), maxspeed: num(t.maxspeed) };
+  const bridge = t.bridge === 'yes' || t.bridge === 'viaduct';
+  const tunnel = t.tunnel === 'yes';
+  const layer = num(t.layer);
+  // 높이 레벨: 고가 +1/+2.., 지하차도 -1/-2.. (OSM layer 태그 기준, 없으면 ±1)
+  const lv = bridge ? Math.max(1, Number.isFinite(layer) ? Math.round(layer) : 1) : tunnel ? Math.min(-1, Number.isFinite(layer) ? Math.round(layer) : -1) : 0;
+  const base = { cls, link, lf, lb, bridge, tunnel, lv, name: tagName(t), maxspeed: num(t.maxspeed) };
 
   // 교차로(다른 길과 공유) 또는 끝점에서 끊어 간선으로
   let run = [ids[0]];
@@ -194,6 +199,47 @@ for (const w of highwayWays) {
     else graphIndex.delete(id);
   }
 }
+
+// ----- 고가·지하차도 높이 (src/world/graph.ts 의 levelHeight/SLOPE 와 같은 값) -----
+// 노드 높이: 지상 도로가 하나라도 닿으면 0, 아니면 가장 지면에 가까운 레벨의 높이. 간선 안에서는 양끝에서 6% 경사로 오르내린다
+const levelHeight = (lv) => (lv > 0 ? 7 + (lv - 1) * 5.5 : lv < 0 ? -6.5 - (-lv - 1) * 5.5 : 0);
+const SLOPE = 0.06;
+const nodeY = new Array(nodes.length).fill(0);
+{
+  const lvAt = nodes.map(() => new Set());
+  for (const e of edges) { lvAt[e.a].add(e.lv); lvAt[e.b].add(e.lv); }
+  lvAt.forEach((set, n) => {
+    if (set.has(0)) return;
+    let pos = Infinity;
+    let neg = -Infinity;
+    for (const l of set) { if (l > 0) pos = Math.min(pos, l); else neg = Math.max(neg, l); }
+    nodeY[n] = pos < Infinity && neg > -Infinity ? 0 : levelHeight(pos < Infinity ? pos : neg);
+  });
+  // 짧은 간선으로는 다 오르지 못하므로 양끝 높이차가 경사 한계를 넘지 않게 지면 쪽으로 당긴다 (수렴할 때까지)
+  for (let iter = 0; iter < 60; iter++) {
+    let changed = false;
+    for (const e of edges) {
+      const lim = SLOPE * e.len;
+      const ya = nodeY[e.a];
+      const yb = nodeY[e.b];
+      if (yb > ya + lim) { nodeY[e.b] = Math.max(0, ya + lim); changed = true; }
+      else if (ya > yb + lim) { nodeY[e.a] = Math.max(0, yb + lim); changed = true; }
+      else if (yb < ya - lim) { nodeY[e.b] = Math.min(0, ya - lim); changed = true; }
+      else if (ya < yb - lim) { nodeY[e.a] = Math.min(0, yb - lim); changed = true; }
+    }
+    if (!changed) break;
+  }
+  // 양끝이 지면인 60m 미만 다리·굴은 혹처럼 솟지 않게 평탄하게 둔다 (개천 위 작은 다리 등)
+  for (const e of edges) if (e.lv !== 0 && e.len < 60 && nodeY[e.a] === 0 && nodeY[e.b] === 0) e.lv = 0;
+}
+/** 간선 a 에서 s 만큼 간 지점의 노면 높이 */
+const profileY = (e, s) => {
+  const yt = levelHeight(e.lv);
+  if (yt === 0) return 0;
+  const ya = nodeY[e.a];
+  const yb = nodeY[e.b];
+  return yt > 0 ? Math.min(yt, ya + SLOPE * s, yb + SLOPE * (e.len - s)) : Math.max(yt, ya - SLOPE * s, yb - SLOPE * (e.len - s));
+};
 
 // ----- 폴리곤 유틸 -----
 function ringArea(r) {
@@ -485,16 +531,20 @@ for (const n of osmNodes.values()) {
     }
     return false;
   };
-  // 고가·다리·터널 도로는 게임에서 지면 높이라, 그 위아래에 있는 실제 건물은 뺀다 (안 그러면 차가 건물 속을 달린다)
+  // 고가·다리 밑과 지하차도의 트인 구간(깊이 4.5m 미만)에 걸친 실제 건물은 뺀다. 덮인 지하 구간 위 건물은 남긴다
   {
-    const elevated = edges.filter((e) => e.bridge || e.tunnel);
+    const elevated = edges.filter((e) => e.lv !== 0);
     const distToEdge = (e, x, z) => {
       let best = Infinity;
+      let cum = 0;
       for (let k = 0; k < e.pts.length - 2; k += 2) {
         const x0 = e.pts[k]; const z0 = e.pts[k + 1]; const dx = e.pts[k + 2] - x0; const dz = e.pts[k + 3] - z0;
         const l2 = dx * dx + dz * dz || 1;
+        const l = Math.sqrt(l2);
         const t = Math.min(1, Math.max(0, ((x - x0) * dx + (z - z0) * dz) / l2));
-        best = Math.min(best, Math.hypot(x - (x0 + dx * t), z - (z0 + dz * t)));
+        const d = Math.hypot(x - (x0 + dx * t), z - (z0 + dz * t));
+        if (d < best && (e.lv > 0 || profileY(e, cum + l * t) > -4.5)) best = d;
+        cum += l;
       }
       return best;
     };
@@ -590,7 +640,14 @@ for (const e of edges) {
   }
 }
 
-const edgeOut = edges.map((e, id) => ({ id, a: e.a, b: e.b, pts: e.pts, len: Math.round(e.len * 10) / 10, lf: e.lf, lb: e.lb, cls: e.cls, link: e.link, bridge: e.bridge, tunnel: e.tunnel, name: e.name }));
+const edgeOut = edges.map((e, id) => ({ id, a: e.a, b: e.b, pts: e.pts, len: Math.round(e.len * 10) / 10, lf: e.lf, lb: e.lb, cls: e.cls, link: e.link, bridge: e.bridge, tunnel: e.tunnel, lv: e.lv, name: e.name }));
+const nodeOut = (id) => [id, nodes[id][0], nodes[id][1], Math.round(nodeY[id] * 100) / 100];
+{
+  const lvCount = {};
+  let elevLen = 0;
+  for (const e of edges) if (e.lv !== 0) { lvCount[e.lv] = (lvCount[e.lv] ?? 0) + 1; elevLen += e.len; }
+  console.log(`  고가·지하 간선 ${Math.round(elevLen / 100) / 10} km`, lvCount);
+}
 const placesOut = [...new Map(places.map((p) => [p.name, p])).values()];
 const bbox = { minX: Math.round(minX), maxX: Math.round(maxX), minZ: Math.round(minZ), maxZ: Math.round(maxZ) };
 const classes = {};
@@ -599,7 +656,7 @@ console.log(`  영역 ${Math.round(maxX - minX)} × ${Math.round(maxZ - minZ)} m
 console.log(`  건물 ${buildings.length}, 물 ${water.length}, 공원 ${parks.length}, 철도 ${rails.length}, 지명 ${placesOut.length}, 신호등 ${signals.size}, 시작 노드 ${start}`);
 
 if (/\.json$/i.test(OUT)) {
-  const map = { origin: { lat: lat0, lon: lon0 }, bbox, start, nodes, edges: edgeOut, buildings, water, parks, rails, places: placesOut, signals: [...signals] };
+  const map = { origin: { lat: lat0, lon: lon0 }, bbox, start, nodes: nodes.map((_, i) => nodeOut(i).slice(1)), edges: edgeOut, buildings, water, parks, rails, places: placesOut, signals: [...signals] };
   mkdirSync(OUT.replace(/[\\/][^\\/]+$/, ''), { recursive: true });
   writeFileSync(OUT, JSON.stringify(map));
   console.log(`[build] ${OUT} (${(JSON.stringify(map).length / 1024 / 1024).toFixed(1)} MB)`);
@@ -672,7 +729,7 @@ if (/\.json$/i.test(OUT)) {
   let total = 0;
   for (const t of tiles.values()) {
     if (t.i < 0 || t.j < 0 || t.i >= ni || t.j >= nj) continue;
-    const data = { i: t.i, j: t.j, nodes: [...t.nodes].map(([id, p]) => [id, p[0], p[1]]), edges: t.edges, buildings: t.buildings, water: t.water, parks: t.parks, rails: t.rails, signals: t.signals, pois: t.pois ?? [] };
+    const data = { i: t.i, j: t.j, nodes: [...t.nodes.keys()].map(nodeOut), edges: t.edges, buildings: t.buildings, water: t.water, parks: t.parks, rails: t.rails, signals: t.signals, pois: t.pois ?? [] };
     const file = `t/${t.i}_${t.j}.json`;
     const text = JSON.stringify(data);
     writeFileSync(`${OUT}/${file}`, text);

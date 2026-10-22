@@ -5,6 +5,8 @@ export interface Circle {
   x: number;
   z: number;
   r: number;
+  /** 차 높이. 고가 위(지면 장애물 무시)나 지하차도 안(건물 무시) 판단용. 기본 0 */
+  y?: number;
 }
 
 export interface PushResult {
@@ -14,15 +16,15 @@ export interface PushResult {
   nz: number;
 }
 
-/** 가로등·신호등 기둥·나무 줄기(원) 또는 가드레일(선분) 같은 작은 장애물 */
-export type Obstacle = { x: number; z: number; r: number } | { x0: number; z0: number; x1: number; z1: number; r: number };
+/** 가로등·신호등 기둥·나무 줄기(원) 또는 가드레일(선분) 같은 작은 장애물. y 는 놓인 노면 높이(기본 0) */
+export type Obstacle = ({ x: number; z: number; r: number } | { x0: number; z0: number; x1: number; z1: number; r: number }) & { y?: number };
 
 /** 건물·물 폴리곤과 작은 장애물 충돌. 타일 단위로 넣고 뺀다 */
 export interface CollisionWorld {
   /** 원이 건물·장애물에 겹치면 밀어낼 벡터와 법선. 없으면 null. obstacles=false 면 건물만 (카메라용) */
   push(c: Circle, obstacles?: boolean): PushResult | null;
   /** 물 위이고 다리 위가 아니면 true */
-  inWater(x: number, z: number): boolean;
+  inWater(x: number, z: number, y?: number): boolean;
   addTile(key: string, tile: TileData, obstacles: Obstacle[]): void;
   removeTile(key: string): void;
 }
@@ -116,10 +118,13 @@ export function createCollisionWorld(g: RoadGraph): CollisionWorld {
 
   function pushObstacle(c: Circle): PushResult | null {
     const seen = new Set<Obstacle>();
+    const cy = c.y ?? 0;
     for (const k of cellsOf(c.x - c.r, c.x + c.r, c.z - c.r, c.z + c.r)) {
       for (const { o } of obsGrid.get(k) ?? []) {
         if (seen.has(o)) continue;
         seen.add(o);
+        // 다른 높이(고가 위 vs 지면)의 장애물은 지나친다
+        if (Math.abs((o.y ?? 0) - cy) > 3) continue;
         let px: number;
         let pz: number;
         if ('x' in o) {
@@ -155,10 +160,11 @@ export function createCollisionWorld(g: RoadGraph): CollisionWorld {
   return {
     addTile(key, tile, obstacles) {
       for (const b of tile.buildings) addPoly(makePoly(b.ring, key));
+      // 고가·다리 난간과 지하차도 옹벽: 높이를 따라가도록 20m 이하로 잘라 넣는다
       for (const d of tile.edges) {
-        if (!d.bridge) continue;
         const e = g.edge(d.id);
-        if (!e) continue;
+        if (!e || e.yt === 0) continue;
+        const off = e.yt > 0 ? e.half + 0.9 : e.half + 0.7;
         for (let i = 0; i < e.pts.length - 2; i += 2) {
           const x0 = e.pts[i];
           const z0 = e.pts[i + 1];
@@ -167,9 +173,18 @@ export function createCollisionWorld(g: RoadGraph): CollisionWorld {
           const l = Math.hypot(x1 - x0, z1 - z0) || 1;
           const nx = -(z1 - z0) / l;
           const nz = (x1 - x0) / l;
-          for (const side of [-1, 1]) {
-            const off = side * (e.half + 0.9);
-            addObs({ x0: x0 + nx * off, z0: z0 + nz * off, x1: x1 + nx * off, z1: z1 + nz * off, r: 0.25 }, key);
+          const parts = Math.max(1, Math.ceil(l / 20));
+          for (let p = 0; p < parts; p++) {
+            const t0 = p / parts;
+            const t1 = (p + 1) / parts;
+            const y = g.heightAt(e, e.cum[i / 2] + (l * (t0 + t1)) / 2);
+            // 지하차도 옹벽은 노면이 지면 아래로 내려간 곳에만
+            if (e.yt < 0 && y > -0.25) continue;
+            for (const side of [-1, 1]) {
+              const ox = nx * off * side;
+              const oz = nz * off * side;
+              addObs({ x0: x0 + (x1 - x0) * t0 + ox, z0: z0 + (z1 - z0) * t0 + oz, x1: x0 + (x1 - x0) * t1 + ox, z1: z0 + (z1 - z0) * t1 + oz, r: 0.25, y }, key);
+            }
           }
         }
       }
@@ -197,6 +212,8 @@ export function createCollisionWorld(g: RoadGraph): CollisionWorld {
         const hit = pushObstacle(c);
         if (hit) return hit;
       }
+      // 지하차도 안에서는 위에 있는 건물과 부딪히지 않는다 (옹벽이 차를 잡아 둔다)
+      if ((c.y ?? 0) < -2.5) return null;
       const seen = new Set<Poly>();
       for (const k of cellsOf(c.x - c.r, c.x + c.r, c.z - c.r, c.z + c.r)) {
         for (const p of grid.get(k) ?? []) {
@@ -221,7 +238,8 @@ export function createCollisionWorld(g: RoadGraph): CollisionWorld {
       }
       return null;
     },
-    inWater(x, z) {
+    inWater(x, z, y = 0) {
+      if (y > 1.5) return false;
       let wet = false;
       for (const list of waterByTile.values()) {
         for (const p of list) {

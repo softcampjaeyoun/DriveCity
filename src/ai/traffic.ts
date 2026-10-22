@@ -54,6 +54,8 @@ export interface Npc {
   stun: number;
   x: number;
   z: number;
+  /** 노면 높이 */
+  y: number;
   h: number;
   rival: RivalSpec | null;
   racing: boolean;
@@ -235,6 +237,7 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
       stun: 0,
       x: 0,
       z: 0,
+      y: 0,
       h: 0,
       rival,
       racing: false,
@@ -244,10 +247,10 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
     };
     n.latTarget = n.lat;
     planNext(n, seg);
-    [n.x, n.z] = segPos(g, seg, n.s, n.lat);
+    [n.x, n.z, n.y] = segPos(g, seg, n.s, n.lat);
     const p = g.pointAt(e, dir, n.s);
     n.h = Math.atan2(p.hx, p.hz);
-    n.mesh.position.set(n.x, 0, n.z);
+    n.mesh.position.set(n.x, n.y, n.z);
     n.mesh.rotation.y = n.h;
     npcs.push(n);
     return n;
@@ -276,8 +279,8 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
     n.lane = clamp(n.lane, 0, g.lanes(e, dir) - 1);
     n.lat = n.latTarget = g.laneOffset(e, dir, n.lane);
     planNext(n, seg);
-    [n.x, n.z] = segPos(g, seg, n.s, n.lat);
-    n.mesh.position.set(n.x, 0, n.z);
+    [n.x, n.z, n.y] = segPos(g, seg, n.s, n.lat);
+    n.mesh.position.set(n.x, n.y, n.z);
   }
   let persistentSpawned = false;
   const DENSITY = 1.5; // 도로 1km 당 차량 대수 (3×3 타일 기준 300대 안팎)
@@ -328,8 +331,8 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
         speed = ov;
       }
     };
-    for (const o of npcs) if (o !== n) test(o.x, o.z, o.h, o.kind.length / 2, o.speed);
-    test(S.x, S.z, null, 2.1, Math.hypot(S.vx, S.vz));
+    for (const o of npcs) if (o !== n && Math.abs(o.y - n.y) < 2.5) test(o.x, o.z, o.h, o.kind.length / 2, o.speed);
+    if (Math.abs(S.y - n.y) < 2.5) test(S.x, S.z, null, 2.1, Math.hypot(S.vx, S.vz));
     return { gap: best, speed };
   }
 
@@ -348,8 +351,8 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
       if (oh !== null && Math.sin(oh) * fx + Math.cos(oh) * fz < 0.3) return false;
       return true;
     };
-    for (const o of npcs) if (o !== n && blocked(o.x, o.z, o.h)) return false;
-    return !blocked(S.x, S.z, null);
+    for (const o of npcs) if (o !== n && Math.abs(o.y - n.y) < 2.5 && blocked(o.x, o.z, o.h)) return false;
+    return Math.abs(S.y - n.y) >= 2.5 || !blocked(S.x, S.z, null);
   }
 
   function considerLaneChange(n: Npc, S: PlayerState, ahead: { gap: number; speed: number }): void {
@@ -492,13 +495,17 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
           n.s += over;
         }
         if (n.seg.kind === 'edge') n.lat += clamp(n.latTarget - n.lat, -LANE_RATE * dt, LANE_RATE * dt);
-        const [x, z] = segPos(g, n.seg, n.s, n.lat);
+        const [x, z, y] = segPos(g, n.seg, n.s, n.lat);
         const mx = x - n.x;
         const mz = z - n.z;
         if (mx * mx + mz * mz > 1e-6) n.h = Math.atan2(mx, mz);
+        // 경사 피치: 이동 거리 대비 높이 변화
+        const run = Math.hypot(mx, mz);
+        if (run > 0.01) n.mesh.rotation.x += (-Math.atan2(y - n.y, run) - n.mesh.rotation.x) * Math.min(1, dt * 6);
         n.x = x;
         n.z = z;
-        n.mesh.position.set(x, 0, z);
+        n.y = y;
+        n.mesh.position.set(x, y, z);
         n.mesh.rotation.y = n.h;
 
         if (n.police) {
@@ -527,7 +534,7 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
       let hit = 0;
       for (const n of npcs) {
         const reach = n.kind.length / 2 + 4;
-        if (Math.abs(n.x - S.x) > reach || Math.abs(n.z - S.z) > reach) continue;
+        if (Math.abs(n.x - S.x) > reach || Math.abs(n.z - S.z) > reach || Math.abs(n.y - S.y) > 2.5) continue;
         const nfx = Math.sin(n.h);
         const nfz = Math.cos(n.h);
         const minD = RADIUS + n.radius;

@@ -137,6 +137,8 @@ export function createSignals(scene: THREE.Scene, g: RoadGraph): Signals {
         const p = g.pointAt(e, dir, e.len - 0.5);
         const [rx, rz] = rightOf(p.hx, p.hz);
         const [nx, nz] = g.pos(h.node);
+        // 고가 위 교차로면 신호등도 노면 높이에서 선다
+        const ny = g.posY(h.node);
         const cross = g.cut(e, h.node) + 1.5;
         const px = nx + p.hx * cross + rx * (e.half + 1.2);
         const pz = nz + p.hz * cross + rz * (e.half + 1.2);
@@ -145,38 +147,38 @@ export function createSignals(scene: THREE.Scene, g: RoadGraph): Signals {
         poles.push([px, pz]);
         dummy.rotation.set(0, yaw, 0);
         dummy.scale.set(1, 1, 1);
-        dummy.position.set(px, 2.8, pz);
+        dummy.position.set(px, ny + 2.8, pz);
         dummy.updateMatrix();
         poleMesh.setMatrixAt(idx, dummy.matrix);
         dummy.rotation.set(0, yaw + Math.PI / 2, 0);
         dummy.scale.set(1, 1, armLen);
-        dummy.position.set(px - rx * (armLen / 2), 5.5, pz - rz * (armLen / 2));
+        dummy.position.set(px - rx * (armLen / 2), ny + 5.5, pz - rz * (armLen / 2));
         dummy.updateMatrix();
         armMesh.setMatrixAt(idx, dummy.matrix);
         dummy.scale.set(1, 1, 1);
         const hx = px - rx * armLen;
         const hz = pz - rz * armLen;
         dummy.rotation.set(0, yaw, 0);
-        dummy.position.set(hx, 5.0, hz);
+        dummy.position.set(hx, ny + 5.0, hz);
         dummy.updateMatrix();
         boxMesh.setMatrixAt(idx, dummy.matrix);
         const lampY: Record<Light, number> = { red: 5.42, yellow: 5.0, green: 4.58 };
         for (const c of ['red', 'yellow', 'green'] as const) {
-          dummy.position.set(hx - p.hx * 0.2, lampY[c], hz - p.hz * 0.2);
+          dummy.position.set(hx - p.hx * 0.2, ny + lampY[c], hz - p.hz * 0.2);
           dummy.updateMatrix();
           lamp[c].setMatrixAt(idx, dummy.matrix);
           lamp[c].setColorAt(idx, col.setHex(DIM[c]));
         }
         // 보행 신호: 기둥에 붙은 작은 함체, 횡단보도(정지선 앞)를 향한다
         dummy.rotation.set(0, yaw + Math.PI, 0);
-        dummy.position.set(px - p.hx * 0.25, 2.3, pz - p.hz * 0.25);
+        dummy.position.set(px - p.hx * 0.25, ny + 2.3, pz - p.hz * 0.25);
         dummy.updateMatrix();
         walkBox.setMatrixAt(idx, dummy.matrix);
         for (const [c, y] of [
           ['red', 2.48],
           ['green', 2.12],
         ] as const) {
-          dummy.position.set(px - p.hx * 0.38, y, pz - p.hz * 0.38);
+          dummy.position.set(px - p.hx * 0.38, ny + y, pz - p.hz * 0.38);
           dummy.updateMatrix();
           walk[c].setMatrixAt(idx, dummy.matrix);
           walk[c].setColorAt(idx, col.setHex(DIM[c]));

@@ -12,8 +12,12 @@ import { createSkids } from './skids.ts';
 export interface PlayerState {
   x: number;
   z: number;
+  /** 노면 높이 (고가 위 +, 지하차도 -) */
+  y: number;
   /** 진행 방향 (rad). sin → x, cos → z */
   h: number;
+  /** 경사 피치 (rad, 오르막 +) */
+  pitch: number;
   vx: number;
   vz: number;
   steer: number;
@@ -56,7 +60,7 @@ export const PROBE: readonly number[] = [1.3, -1.3];
 export const RADIUS = 1.15;
 
 export function createPlayer(scene: THREE.Scene, g: RoadGraph): Player {
-  const S: PlayerState = { x: g.index.start.x, z: g.index.start.z, h: 0, vx: 0, vz: 0, steer: 0, nitro: 0.6, shake: 0, wheelSpin: 0 };
+  const S: PlayerState = { x: g.index.start.x, z: g.index.start.z, y: 0, h: 0, pitch: 0, vx: 0, vz: 0, steer: 0, nitro: 0.6, shake: 0, wheelSpin: 0 };
   const bounds = { minX: g.bbox.minX + 1.3, maxX: g.bbox.maxX - 1.3, minZ: g.bbox.minZ + 1.3, maxZ: g.bbox.maxZ - 1.3 };
   // 시작 교차로에서 큰길 방향을 보고 차선 위에 놓는다
   {
@@ -67,6 +71,7 @@ export function createPlayer(scene: THREE.Scene, g: RoadGraph): Player {
       const p = g.pointAt(e, g.canTravel(e, dir) ? dir : ((dir * -1) as 1 | -1), Math.min(e.len * 0.5, g.cut(e, g.start) + 8));
       S.x = p.x - p.hz * g.laneOffset(e, 1, 0);
       S.z = p.z + p.hx * g.laneOffset(e, 1, 0);
+      S.y = p.y;
       S.h = Math.atan2(p.hx, p.hz);
     }
   }
@@ -74,6 +79,8 @@ export function createPlayer(scene: THREE.Scene, g: RoadGraph): Player {
 
   // ----- 모델 -----
   const group = new THREE.Group();
+  // 요(진행 방향) 먼저, 그 다음 경사 피치
+  group.rotation.order = 'YXZ';
   // fallback 아래에 상자 모델 전부. 외부 모델이 오면 fallback 만 숨긴다
   const fallback = new THREE.Group();
   fallback.name = 'fallback';
@@ -156,7 +163,7 @@ export function createPlayer(scene: THREE.Scene, g: RoadGraph): Player {
     let hit = 0;
     for (const off of PROBE) {
       for (let iter = 0; iter < 2; iter++) {
-        const r = world.push({ x: S.x + fx * off, z: S.z + fz * off, r: RADIUS });
+        const r = world.push({ x: S.x + fx * off, z: S.z + fz * off, r: RADIUS, y: S.y });
         if (!r) break;
         S.x += r.dx;
         S.z += r.dz;
@@ -170,7 +177,7 @@ export function createPlayer(scene: THREE.Scene, g: RoadGraph): Player {
         }
       }
     }
-    if (world.inWater(S.x, S.z)) player.fell = true;
+    if (world.inWater(S.x, S.z, S.y)) player.fell = true;
     for (const axis of ['x', 'z'] as const) {
       const v = axis === 'x' ? 'vx' : 'vz';
       const lo = axis === 'x' ? bounds.minX : bounds.minZ;
@@ -202,6 +209,12 @@ export function createPlayer(scene: THREE.Scene, g: RoadGraph): Player {
       const lz = -Math.sin(S.h);
       let vf = S.vx * fx + S.vz * fz;
       let vl = S.vx * lx + S.vz * lz;
+
+      // 경사: 앞뒤 2.2m 노면 높이차. 오르막은 느려지고 내리막은 빨라진다
+      const yAhead = g.groundAt(S.x + fx * 2.2, S.z + fz * 2.2, S.y);
+      const yBehind = g.groundAt(S.x - fx * 2.2, S.z - fz * 2.2, S.y);
+      const slope = clamp((yAhead - yBehind) / 4.4, -0.2, 0.2);
+      vf -= 9.81 * slope * 0.7 * dt;
 
       const boosting = inp.nitro && S.nitro > 0.01 && inp.up;
       const vmax = boosting ? st.nitroVmax : st.vmax;
@@ -237,13 +250,18 @@ export function createPlayer(scene: THREE.Scene, g: RoadGraph): Player {
       S.z += S.vz * dt;
       collide(world);
       after();
+      // 노면 높이를 따라간다. 순간이동처럼 크게 다르면 바로 맞춘다
+      const gy = g.groundAt(S.x, S.z, S.y);
+      const dy = gy - S.y;
+      S.y += Math.abs(dy) > 3 ? dy : dy * Math.min(1, dt * 12);
+      S.pitch += (Math.atan(slope) - S.pitch) * Math.min(1, dt * 6);
 
       const drifting = Math.abs(vl) > 3.2 && Math.abs(vf) > 8;
       if (drifting) {
         S.nitro = Math.min(1, S.nitro + dt * st.nitroGain);
         player.driftScore += Math.abs(vl) * dt * 10;
         player.driftTimer = 0.6;
-        for (const side of [-0.95, 0.95]) skids.add(S.x - fx * 1.35 + lx * side, S.z - fz * 1.35 + lz * side, S.h);
+        for (const side of [-0.95, 0.95]) skids.add(S.x - fx * 1.35 + lx * side, S.z - fz * 1.35 + lz * side, S.h, S.y);
       } else {
         S.nitro = Math.min(1, S.nitro + dt * 0.02);
         player.driftTimer -= dt;
@@ -254,8 +272,9 @@ export function createPlayer(scene: THREE.Scene, g: RoadGraph): Player {
     },
 
     applyVisual(r, inp, dt) {
-      group.position.set(S.x, 0, S.z);
+      group.position.set(S.x, S.y, S.z);
       group.rotation.y = S.h;
+      group.rotation.x = -S.pitch;
       body.rotation.z = clamp(-r.vl * 0.012, -0.08, 0.08);
       body.rotation.x = clamp((inp.down ? 0.03 : 0) - (inp.up ? 0.02 : 0), -0.05, 0.05);
       S.wheelSpin += (r.vf * dt) / 0.38;
@@ -290,8 +309,14 @@ export function createPlayer(scene: THREE.Scene, g: RoadGraph): Player {
         const lat = g.laneOffset(hit.e, dir, 0);
         S.x = p.x - p.hz * lat;
         S.z = p.z + p.hx * lat;
+        S.y = p.y;
         S.h = Math.atan2(p.hx, p.hz);
-      } else [S.x, S.z] = g.pos(g.nearestNode(S.x, S.z));
+      } else {
+        const n = g.nearestNode(S.x, S.z);
+        [S.x, S.z] = g.pos(n);
+        S.y = g.posY(n);
+      }
+      S.pitch = 0;
       S.vx = S.vz = 0;
       S.steer = 0;
     },

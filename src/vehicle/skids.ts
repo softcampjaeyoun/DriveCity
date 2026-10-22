@@ -3,7 +3,7 @@ import * as THREE from 'three';
 const COUNT = 900;
 
 /** 드리프트 중 바닥에 남는 스키드 마크. 링 버퍼로 오래된 것부터 덮어쓴다 */
-export function createSkids(scene: THREE.Scene): { add(x: number, z: number, h: number): void } {
+export function createSkids(scene: THREE.Scene): { add(x: number, z: number, h: number, y?: number): void } {
   const mesh = new THREE.InstancedMesh(
     new THREE.PlaneGeometry(0.3, 0.75).rotateX(-Math.PI / 2),
     new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.55, depthWrite: false }),
@@ -18,8 +18,8 @@ export function createSkids(scene: THREE.Scene): { add(x: number, z: number, h: 
 
   let idx = 0;
   return {
-    add(x, z, h) {
-      dummy.position.set(x, 0.022, z);
+    add(x, z, h, y = 0) {
+      dummy.position.set(x, y + 0.022, z);
       dummy.rotation.set(0, h, 0);
       dummy.updateMatrix();
       mesh.setMatrixAt(idx, dummy.matrix);

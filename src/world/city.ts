@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mulberry32 } from '../util/math.ts';
 import { aptTextures, arrowTexture, billboardTexture, dongTexture, facadeSet, loadMerged, loadTex, shopNameTexture, signTexture, storefrontTextures, streetSignTexture, subwaySignTexture, SUB_KO, type MergedModel } from '../render/assets.ts';
 import { glowTexture, windowTexture } from '../render/textures.ts';
-import type { Node, RoadGraph } from './graph.ts';
+import type { Edge, Node, RoadGraph } from './graph.ts';
 import type { BuildingData, MapIndex, TileData } from './mapdata.ts';
 import { pointInRing, type Obstacle } from './collision.ts';
 import { rightOf } from './roads.ts';
@@ -58,17 +58,11 @@ class GeoBuilder {
   }
 }
 
-/** 폴리라인을 따라 폭 2*half 의 띠. u 는 0..1 가로, v 는 길이/vTile */
-function ribbon(b: GeoBuilder, pts: number[], half: number, y: number, vTile = 8): void {
+/** 폴리라인 각 꼭짓점의 옆 방향(오른쪽) 벡터. 꺾이는 곳은 이음새가 벌어지지 않게 마이터로 늘인다. [nx, nz, ...] */
+function sideNormals(pts: number[]): number[] {
   const n = pts.length / 2;
-  if (n < 2) return;
-  const left: number[] = [];
-  const right: number[] = [];
-  let cum = 0;
+  const out: number[] = [];
   for (let i = 0; i < n; i++) {
-    const px = pts[i * 2];
-    const pz = pts[i * 2 + 1];
-    if (i > 0) cum += Math.hypot(px - pts[i * 2 - 2], pz - pts[i * 2 - 1]);
     let nx = 0;
     let nz = 0;
     let count = 0;
@@ -84,16 +78,138 @@ function ribbon(b: GeoBuilder, pts: number[], half: number, y: number, vTile = 8
       nz += dx / l;
       count++;
     }
-    nx /= count;
-    nz /= count;
+    nx /= count || 1;
+    nz /= count || 1;
     const l = Math.hypot(nx, nz) || 1;
     const scale = Math.min(1 / Math.max(l, 0.5), 1.6);
-    nx = (nx / l) * scale;
-    nz = (nz / l) * scale;
-    left.push(b.vertex(px - nx * half, y, pz - nz * half, 0, 1, 0, 0, cum / vTile));
-    right.push(b.vertex(px + nx * half, y, pz + nz * half, 0, 1, 0, 1, cum / vTile));
+    out.push((nx / l) * scale, (nz / l) * scale);
+  }
+  return out;
+}
+
+/** 폴리라인을 따라 폭 2*half 의 띠. u 는 0..1 가로, v 는 길이/vTile. ys 를 주면 꼭짓점마다 그 높이에 y 를 더한다 */
+function ribbon(b: GeoBuilder, pts: number[], half: number, y: number, vTile = 8, ys?: number[]): void {
+  const n = pts.length / 2;
+  if (n < 2) return;
+  const nrm = sideNormals(pts);
+  const left: number[] = [];
+  const right: number[] = [];
+  let cum = 0;
+  for (let i = 0; i < n; i++) {
+    const px = pts[i * 2];
+    const pz = pts[i * 2 + 1];
+    if (i > 0) cum += Math.hypot(px - pts[i * 2 - 2], pz - pts[i * 2 - 1]);
+    const nx = nrm[i * 2];
+    const nz = nrm[i * 2 + 1];
+    const py = y + (ys ? ys[i] : 0);
+    left.push(b.vertex(px - nx * half, py, pz - nz * half, 0, 1, 0, 0, cum / vTile));
+    right.push(b.vertex(px + nx * half, py, pz + nz * half, 0, 1, 0, 1, cum / vTile));
   }
   for (let i = 0; i < n - 1; i++) b.quad(left[i], right[i], right[i + 1], left[i + 1]);
+}
+
+/** 고가 상판 몸체: 윗면·밑면(1.2m 아래)·양 옆면 */
+function deckBody(b: GeoBuilder, pts: number[], ys: number[], half: number): void {
+  const n = pts.length / 2;
+  if (n < 2) return;
+  const nrm = sideNormals(pts);
+  const T = 1.2;
+  const lt: number[] = [];
+  const rt: number[] = [];
+  const lb: number[] = [];
+  const rb: number[] = [];
+  let cum = 0;
+  for (let i = 0; i < n; i++) {
+    const px = pts[i * 2];
+    const pz = pts[i * 2 + 1];
+    if (i > 0) cum += Math.hypot(px - pts[i * 2 - 2], pz - pts[i * 2 - 1]);
+    const nx = nrm[i * 2];
+    const nz = nrm[i * 2 + 1];
+    const lx = px - nx * half;
+    const lz = pz - nz * half;
+    const rx = px + nx * half;
+    const rz = pz + nz * half;
+    const v = cum / 6;
+    lt.push(b.vertex(lx, ys[i], lz, 0, 1, 0, 0, v));
+    rt.push(b.vertex(rx, ys[i], rz, 0, 1, 0, 1, v));
+    lb.push(b.vertex(lx, ys[i] - T, lz, -nx, 0, -nz, 0, v));
+    rb.push(b.vertex(rx, ys[i] - T, rz, nx, 0, nz, 1, v));
+  }
+  for (let i = 0; i < n - 1; i++) {
+    b.quad(lt[i], rt[i], rt[i + 1], lt[i + 1]);
+    b.quad(rb[i], lb[i], lb[i + 1], rb[i + 1]);
+    b.quad(lb[i], lt[i], lt[i + 1], lb[i + 1]);
+    b.quad(rt[i], rb[i], rb[i + 1], rt[i + 1]);
+  }
+}
+
+/**
+ * 지하차도: 노면이 지면 아래로 내려간 곳에 양쪽 옹벽, 4.5m 보다 깊으면 천장(-1m)으로 덮는다.
+ * mask 에는 트인 구간을 지면 높이로 넣어 바닥 평면에 스텐실 구멍을 낸다
+ */
+function trench(b: GeoBuilder, mask: GeoBuilder, pts: number[], ys: number[], half: number): void {
+  const n = pts.length / 2;
+  if (n < 2) return;
+  const nrm = sideNormals(pts);
+  const OPEN = -0.25;
+  const COVER = -4.5;
+  const CEIL = -1.0;
+  const wo = half + 0.7;
+  const mo = half + 0.55;
+  const covered = (y: number) => y < COVER;
+  const topOf = (y: number) => (covered(y) ? CEIL : 0.5);
+  for (let i = 0; i < n - 1; i++) {
+    const y0 = ys[i];
+    const y1 = ys[i + 1];
+    if (y0 > OPEN && y1 > OPEN) continue;
+    const corners = (k: number, off: number) => {
+      const nx = nrm[k * 2];
+      const nz = nrm[k * 2 + 1];
+      return [pts[k * 2] - nx * off, pts[k * 2 + 1] - nz * off, pts[k * 2] + nx * off, pts[k * 2 + 1] + nz * off, nx, nz] as const;
+    };
+    const [lx0, lz0, rx0, rz0, nx0, nz0] = corners(i, wo);
+    const [lx1, lz1, rx1, rz1, nx1, nz1] = corners(i + 1, wo);
+    const t0 = topOf(y0);
+    const t1 = topOf(y1);
+    // 옹벽 (안쪽을 향한 법선)
+    const lf0 = b.vertex(lx0, y0, lz0, nx0, 0, nz0, 0, y0);
+    const lf1 = b.vertex(lx1, y1, lz1, nx1, 0, nz1, 1, y1);
+    const lt0 = b.vertex(lx0, t0, lz0, nx0, 0, nz0, 0, t0);
+    const lt1 = b.vertex(lx1, t1, lz1, nx1, 0, nz1, 1, t1);
+    b.quad(lf0, lf1, lt1, lt0);
+    const rf0 = b.vertex(rx0, y0, rz0, -nx0, 0, -nz0, 0, y0);
+    const rf1 = b.vertex(rx1, y1, rz1, -nx1, 0, -nz1, 1, y1);
+    const rt0 = b.vertex(rx0, t0, rz0, -nx0, 0, -nz0, 0, t0);
+    const rt1 = b.vertex(rx1, t1, rz1, -nx1, 0, -nz1, 1, t1);
+    b.quad(rt0, rt1, rf1, rf0);
+    if (covered(y0) && covered(y1)) {
+      // 천장 (아래를 향한 법선)
+      const a = b.vertex(lx0, CEIL, lz0, 0, -1, 0, 0, 0);
+      const c = b.vertex(rx0, CEIL, rz0, 0, -1, 0, 1, 0);
+      const d = b.vertex(rx1, CEIL, rz1, 0, -1, 0, 1, 1);
+      const e = b.vertex(lx1, CEIL, lz1, 0, -1, 0, 0, 1);
+      b.quad(a, c, d, e);
+    } else if (covered(y0) !== covered(y1)) {
+      // 터널 입구 상인방: 천장 높이에서 지면 위 0.5m 까지 가로막
+      const k = covered(y1) ? i + 1 : i;
+      const [lx, lz, rx, rz] = corners(k, wo);
+      const a = b.vertex(lx, CEIL, lz, 0, 0, 1, 0, 0);
+      const c = b.vertex(rx, CEIL, rz, 0, 0, 1, 1, 0);
+      const d = b.vertex(rx, 0.5, rz, 0, 0, 1, 1, 1);
+      const e = b.vertex(lx, 0.5, lz, 0, 0, 1, 0, 1);
+      b.quad(a, c, d, e);
+    }
+    if (!covered(y0) || !covered(y1)) {
+      // 트인 구간: 바닥 평면 구멍
+      const [mlx0, mlz0, mrx0, mrz0] = corners(i, mo);
+      const [mlx1, mlz1, mrx1, mrz1] = corners(i + 1, mo);
+      const a = mask.vertex(mlx0, 0, mlz0, 0, 1, 0);
+      const c = mask.vertex(mrx0, 0, mrz0, 0, 1, 0);
+      const d = mask.vertex(mrx1, 0, mrz1, 0, 1, 0);
+      const e = mask.vertex(mlx1, 0, mlz1, 0, 1, 0);
+      mask.quad(a, c, d, e);
+    }
+  }
 }
 
 function ringCentroid(ring: number[]): [number, number] {
@@ -171,12 +287,15 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
   const spanZ = maxZ - minZ + 2400;
 
   // ----- 전체 공유: 바닥, 재질 -----
-  const groundMat = new THREE.MeshStandardMaterial({ map: loadTex('Concrete034_Color.jpg', true, spanX / 10, spanZ / 10), roughness: 0.95, color: 0x8d9097 });
+  // 바닥은 스텐실 1 인 곳(지하차도 트인 구간, maskMat 이 먼저 찍는다)을 비워 둔다
+  const groundMat = new THREE.MeshStandardMaterial({ map: loadTex('Concrete034_Color.jpg', true, spanX / 10, spanZ / 10), roughness: 0.95, color: 0x8d9097, stencilWrite: true, stencilFunc: THREE.NotEqualStencilFunc, stencilRef: 1 });
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(spanX, spanZ), groundMat);
   ground.rotation.x = -Math.PI / 2;
   ground.position.set((minX + maxX) / 2, 0, (minZ + maxZ) / 2);
   ground.receiveShadow = true;
+  ground.renderOrder = -1;
   scene.add(ground);
+  const maskMat = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false, depthTest: false, stencilWrite: true, stencilRef: 1, stencilFunc: THREE.AlwaysStencilFunc, stencilZPass: THREE.ReplaceStencilOp });
 
   const ripple = (() => {
     const c = document.createElement('canvas');
@@ -200,7 +319,9 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
   const railMat = new THREE.MeshLambertMaterial({ color: 0x23262e, side: THREE.DoubleSide });
   const roadMat = new THREE.MeshStandardMaterial({ map: loadTex('Asphalt033_Color.jpg', true, 1, 1), normalMap: loadTex('Asphalt033_NormalGL.jpg', false, 1, 1), roughness: 0.9, color: 0x9a9ca3 });
   const walkMat = new THREE.MeshStandardMaterial({ map: loadTex('PavingStones151_Color.jpg', true, 4, 1), normalMap: loadTex('PavingStones151_NormalGL.jpg', false, 4, 1), roughness: 0.9, color: 0xb9bcc3 });
-  const deckMat = new THREE.MeshStandardMaterial({ map: loadTex('Asphalt033_Color.jpg', true, 1, 1), roughness: 0.9, color: 0x8a8d94 });
+  // 고가 상판·교각 콘크리트, 지하차도 옹벽·천장
+  const deckMat = new THREE.MeshStandardMaterial({ map: loadTex('Concrete034_Color.jpg', true, 1, 1), roughness: 0.95, color: 0x9a9ca2, side: THREE.DoubleSide });
+  const tunnelMat = new THREE.MeshStandardMaterial({ color: 0x61646c, roughness: 0.95, side: THREE.DoubleSide });
   const bridgeRailMat = new THREE.MeshLambertMaterial({ color: 0x8b93a3 });
   const yellowMat = new THREE.MeshLambertMaterial({ color: 0xd9b24a });
   const whiteMat = new THREE.MeshLambertMaterial({ color: 0xe8ebf2 });
@@ -427,17 +548,60 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
       return best;
     };
 
-    // ----- 도로, 인도, 다리 -----
+    /** 고가·지하 간선은 6m 간격으로 촘촘히 잘라 노면 높이를 따라간다. 지상 간선은 원래 꼭짓점 그대로 */
+    const pathCache = new Map<number, { pts: number[]; ys?: number[] }>();
+    const pathOf = (e: Edge): { pts: number[]; ys?: number[] } => {
+      let p = pathCache.get(e.id);
+      if (p) return p;
+      if (e.yt === 0) p = { pts: e.pts };
+      else {
+        const ss = new Set<number>(e.cum);
+        for (let s = 0; s < e.len; s += 6) ss.add(s);
+        ss.add(e.len);
+        const pts: number[] = [];
+        const ys: number[] = [];
+        for (const s of [...ss].sort((a, b) => a - b)) {
+          const q = g.pointAt(e, 1, s);
+          pts.push(q.x, q.z);
+          ys.push(q.y);
+        }
+        p = { pts, ys };
+      }
+      pathCache.set(e.id, p);
+      return p;
+    };
+
+    // ----- 도로, 인도, 고가·다리, 지하차도 -----
     {
       const rb = new GeoBuilder();
       const sb = new GeoBuilder();
-      const bb = new GeoBuilder();
+      const deckB = new GeoBuilder();
+      const tunnelB = new GeoBuilder();
+      const maskB = new GeoBuilder();
+      const piers: Placement[] = [];
+      const rails: Placement[] = [];
       for (const e of edges) {
-        if (e.bridge) ribbon(bb, e.pts, e.half + 0.6, 0.3);
-        else {
-          ribbon(rb, e.pts, e.half + 0.3, 0.02);
-          if (!e.tunnel) ribbon(sb, e.pts, e.half + (e.rank <= 4 ? 4.5 : 2.2), 0.012, 2);
-        }
+        const path = pathOf(e);
+        ribbon(rb, path.pts, e.half + (e.yt < 0 ? 0.7 : 0.3), 0.02, 8, path.ys);
+        if (e.yt === 0) ribbon(sb, e.pts, e.half + (e.rank <= 4 ? 4.5 : 2.2), 0.012, 2);
+        else if (e.yt > 0) {
+          deckBody(deckB, path.pts, path.ys!, e.half + 0.6);
+          for (let s = 1.5; s < e.len; s += 3) {
+            const p = g.pointAt(e, 1, s);
+            const [rx, rz] = rightOf(p.hx, p.hz);
+            for (const side of [-1, 1]) rails.push({ x: p.x + rx * side * (e.half + 0.9), y: p.y + 0.8, z: p.z + rz * side * (e.half + 0.9), yaw: Math.atan2(p.hx, p.hz), w: 1, h: 1 });
+          }
+          // 교각: 22m 마다, 상판이 2.5m 이상 떠 있고 아래가 건물·일방통행 차로가 아닐 때
+          for (let s = 11; s < e.len - 6; s += 22) {
+            const p = g.pointAt(e, 1, s);
+            if (p.y < 2.5 || inBuilding(p.x, p.z)) continue;
+            const below = g.nearestEdge(p.x, p.z, 20);
+            if (below && below.e.yt === 0 && below.d < below.e.half && below.e.lb === 0) continue;
+            const h = p.y - 1.2;
+            piers.push({ x: p.x, y: h / 2, z: p.z, yaw: Math.atan2(p.hx, p.hz), w: e.half > 7 ? 2.4 : 1.6, h, d: 1.6 });
+            obstacles.push({ x: p.x, z: p.z, r: e.half > 7 ? 1.3 : 0.9 });
+          }
+        } else trench(tunnelB, maskB, path.pts, path.ys!, e.half);
         if (e.rank >= 2 && e.rank <= 4 && !e.bridge && !e.tunnel && !e.link) {
           for (let i = 0; i < e.pts.length - 2; i += 2) {
             const x0 = e.pts[i];
@@ -469,32 +633,32 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
       }
       if (!sb.empty) addMesh(sb.build(), walkMat);
       if (!rb.empty) addMesh(rb.build(), roadMat);
-      if (!bb.empty) addMesh(bb.build(), deckMat);
-      // 교차로 안쪽: 도로 띠가 cut 만큼 비워 두는 자리를 원판으로 덮는다
+      if (!deckB.empty) addMesh(deckB.build(), deckMat, true);
+      if (!tunnelB.empty) addMesh(tunnelB.build(), tunnelMat);
+      if (!maskB.empty) {
+        const m = addMesh(maskB.build(), maskMat);
+        m.renderOrder = -2;
+        m.receiveShadow = false;
+      }
+      addInstanced(unitBox, deckMat, piers, undefined, true);
+      // 교차로 안쪽: 도로 띠가 cut 만큼 비워 두는 자리를 원판으로 덮는다 (노드 높이에서)
       const discs: Placement[] = [];
+      const maskDiscs: Placement[] = [];
       for (const [n] of tile.nodes) {
         const es = g.edgesAt(n);
         if (es.length < 2) continue;
         let r = 0;
-        let bridge = false;
-        for (const e of es) {
-          r = Math.max(r, e.half);
-          if (e.bridge) bridge = true;
-        }
+        for (const e of es) r = Math.max(r, e.half);
         const [x, z] = g.pos(n);
+        const y = g.posY(n);
         const cut = Math.max(...es.map((e) => g.cut(e, n)));
-        discs.push({ x, y: bridge ? 0.31 : 0.021, z, yaw: 0, w: r + cut * 0.5 + 0.6, h: 1, d: r + cut * 0.5 + 0.6 });
+        const size = r + cut * 0.5 + 0.6;
+        discs.push({ x, y: y + 0.021, z, yaw: 0, w: size, h: 1, d: size });
+        if (y < -0.25 && y > -4.5) maskDiscs.push({ x, y: 0, z, yaw: 0, w: size + 0.3, h: 1, d: size + 0.3 });
       }
       addInstanced(discGeo, roadMat, discs);
-      const rails: Placement[] = [];
-      for (const e of edges) {
-        if (!e.bridge) continue;
-        for (let s = 1.5; s < e.len; s += 3) {
-          const p = g.pointAt(e, 1, s);
-          const [rx, rz] = rightOf(p.hx, p.hz);
-          for (const side of [-1, 1]) rails.push({ x: p.x + rx * side * (e.half + 0.9), y: 0.8, z: p.z + rz * side * (e.half + 0.9), yaw: Math.atan2(p.hx, p.hz), w: 1, h: 1 });
-        }
-      }
+      const md = addInstanced(discGeo, maskMat, maskDiscs);
+      if (md) md.renderOrder = -2;
       addInstanced(railGeo, bridgeRailMat, rails);
     }
 
@@ -509,7 +673,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
         if (twoWay) {
           for (let s = 3; s < e.len - 1; s += 6) {
             const p = g.pointAt(e, 1, s);
-            yellow.push({ x: p.x, y: 0.035, z: p.z, yaw: Math.atan2(p.hx, p.hz), w: 0.16, h: 1, d: Math.min(6, e.len - s + 2) });
+            yellow.push({ x: p.x, y: p.y + 0.035, z: p.z, yaw: Math.atan2(p.hx, p.hz), w: 0.16, h: 1, d: Math.min(6, e.len - s + 2) });
           }
         }
         const offs: number[] = [];
@@ -521,7 +685,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
           for (let s = 2; s < e.len - 2; s += 7) {
             const p = g.pointAt(e, 1, s);
             const [rx, rz] = rightOf(p.hx, p.hz);
-            for (const o of offs) white.push({ x: p.x + rx * o, y: 0.035, z: p.z + rz * o, yaw: Math.atan2(p.hx, p.hz), w: 0.15, h: 1, d: 3 });
+            for (const o of offs) white.push({ x: p.x + rx * o, y: p.y + 0.035, z: p.z + rz * o, yaw: Math.atan2(p.hx, p.hz), w: 0.15, h: 1, d: 3 });
           }
         }
       }
@@ -537,9 +701,9 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
           const [rx, rz] = rightOf(p.hx, p.hz);
           const yaw = Math.atan2(p.hx, p.hz);
           const center = e.lb === 0 ? 0 : laneSpan / 2;
-          bars.push({ x: p.x + rx * center, y: 0.036, z: p.z + rz * center, yaw, w: laneSpan - 0.5, h: 1, d: 0.4 });
+          bars.push({ x: p.x + rx * center, y: p.y + 0.036, z: p.z + rz * center, yaw, w: laneSpan - 0.5, h: 1, d: 0.4 });
           const q = g.pointAt(e, dir, Math.max(0, e.len - cut + 0.6));
-          for (let o = -e.half + 0.9; o < e.half - 0.3; o += 2.1) bars.push({ x: q.x + rx * o, y: 0.036, z: q.z + rz * o, yaw, w: 1.2, h: 1, d: 2.4 });
+          for (let o = -e.half + 0.9; o < e.half - 0.3; o += 2.1) bars.push({ x: q.x + rx * o, y: q.y + 0.036, z: q.z + rz * o, yaw, w: 1.2, h: 1, d: 2.4 });
         }
       }
       addInstanced(unitPlane, yellowMat, yellow);
@@ -561,7 +725,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
           for (let lane = 0; lane < lanes; lane++) {
             const lat = g.laneOffset(e, dir, lane);
             const kind: keyof typeof arrowMats = lanes === 1 ? 'straight' : lane === lanes - 1 ? (lanes >= 3 ? 'right' : 'straightRight') : lane === 0 ? 'left' : 'straight';
-            arrows[kind].push({ x: p.x + rx * lat, y: 0.037, z: p.z + rz * lat, yaw, w: 1.0, h: 1, d: 2.5 });
+            arrows[kind].push({ x: p.x + rx * lat, y: p.y + 0.037, z: p.z + rz * lat, yaw, w: 1.0, h: 1, d: 2.5 });
           }
         }
       }
@@ -569,7 +733,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
       // 맨홀: 큰길 60m 마다 하나, 차선 하나에 무작위
       const manholes: Placement[] = [];
       for (const e of edges) {
-        if (e.rank > 4 || e.bridge) continue;
+        if (e.rank > 4 || e.yt !== 0) continue;
         for (let s = 25 + rand() * 20; s < e.len - 10; s += 60) {
           const p = g.pointAt(e, 1, s);
           const [rx, rz] = rightOf(p.hx, p.hz);
@@ -936,22 +1100,22 @@ export function createCity(scene: THREE.Scene, index: MapIndex): City {
 
     // ----- 가로등 -----
     {
-      const lamps: Array<{ x: number; z: number; dx: number; dz: number }> = [];
+      const lamps: Array<{ x: number; y: number; z: number; dx: number; dz: number }> = [];
       for (const e of edges) {
         if (e.rank > 6 || e.tunnel) continue;
         const n = Math.max(1, Math.round(e.len / 36));
         for (let k = 0; k < n; k++) {
           const p = g.pointAt(e, 1, (e.len * (k + 0.5)) / n);
           const [rx, rz] = rightOf(p.hx, p.hz);
-          for (const side of e.rank <= 4 ? [1, -1] : [1]) lamps.push({ x: p.x + rx * side * (e.half + 1.0), z: p.z + rz * side * (e.half + 1.0), dx: -rx * side, dz: -rz * side });
+          for (const side of e.rank <= 4 ? [1, -1] : [1]) lamps.push({ x: p.x + rx * side * (e.half + 1.0), y: p.y, z: p.z + rz * side * (e.half + 1.0), dx: -rx * side, dz: -rz * side });
         }
       }
-      for (const l of lamps) obstacles.push({ x: l.x, z: l.z, r: 0.18 });
-      addInstanced(lampGeo, poleMat, lamps.map((l) => ({ x: l.x, y: 3.75, z: l.z, yaw: 0, w: 1, h: 1 })), undefined, true);
-      addInstanced(poolGeo, poolMat, lamps.map((l) => ({ x: l.x + l.dx * 3.5, y: 0.05, z: l.z + l.dz * 3.5, yaw: 0, w: 1, h: 1 })));
+      for (const l of lamps) obstacles.push({ x: l.x, z: l.z, r: 0.18, y: l.y });
+      addInstanced(lampGeo, poleMat, lamps.map((l) => ({ x: l.x, y: l.y + 3.75, z: l.z, yaw: 0, w: 1, h: 1 })), undefined, true);
+      addInstanced(poolGeo, poolMat, lamps.map((l) => ({ x: l.x + l.dx * 3.5, y: l.y + 0.05, z: l.z + l.dz * 3.5, yaw: 0, w: 1, h: 1 })));
       if (lamps.length) {
         const haloPos = new Float32Array(lamps.length * 3);
-        lamps.forEach((l, i) => haloPos.set([l.x + l.dx * 1.2, 7.4, l.z + l.dz * 1.2], i * 3));
+        lamps.forEach((l, i) => haloPos.set([l.x + l.dx * 1.2, l.y + 7.4, l.z + l.dz * 1.2], i * 3));
         const haloGeo = new THREE.BufferGeometry();
         haloGeo.setAttribute('position', new THREE.BufferAttribute(haloPos, 3));
         group.add(new THREE.Points(haloGeo, haloMat));

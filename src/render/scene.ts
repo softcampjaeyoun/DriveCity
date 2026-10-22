@@ -18,7 +18,8 @@ export interface Stage {
 }
 
 export function createStage(canvas: HTMLCanvasElement): Stage {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  // stencil: 지하차도 트인 구간이 바닥 평면에 구멍을 내는 데 쓴다 (city.ts 의 maskMat/groundMat)
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, stencil: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
   // 필름 톤매핑: 낮 하늘과 네온이 사진처럼 눌린다
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -52,7 +53,7 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
   scene.add(moon);
 
   // 블룸: 창문·네온·가로등처럼 밝은 것만 번지게 문턱을 높게 둔다
-  const composer = new EffectComposer(renderer);
+  const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: THREE.HalfFloatType, stencilBuffer: true }));
   composer.addPass(new RenderPass(scene, camera));
   const bloomPass = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.55, 0.45, 0.82);
   composer.addPass(bloomPass);

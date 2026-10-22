@@ -2,7 +2,7 @@ import * as THREE from 'three';
 
 /** 체크포인트·결승·미션 지점을 표시하는 빛기둥과 링 */
 export interface Marker {
-  setPosition(x: number, z: number): void;
+  setPosition(x: number, z: number, y?: number): void;
   setColor(hex: number): void;
   setVisible(v: boolean): void;
   update(t: number): void;
@@ -28,8 +28,8 @@ export function createMarker(scene: THREE.Scene, color: number, radius = 4): Mar
   scene.add(group);
 
   return {
-    setPosition(x, z) {
-      group.position.set(x, 0, z);
+    setPosition(x, z, y = 0) {
+      group.position.set(x, y, z);
     },
     setColor(hex) {
       beamMat.color.setHex(hex);

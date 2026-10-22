@@ -59,7 +59,7 @@ await tiles.warmup(index.start.x, index.start.z);
 const player = createPlayer(scene, graph);
 const bigmap = createBigMap(document.getElementById('bigmap') as HTMLElement, graph, (x, z) => placeName(graph, graph.nearestNode(x, z)));
 document.getElementById('mapwrap')!.addEventListener('click', () => bigmap.toggle());
-const chase = createChaseCamera(camera, (x, z, r) => world.push({ x, z, r }, false));
+const chase = createChaseCamera(camera, (x, z, r, y) => world.push({ x, z, r, y }, false));
 const input = createInput();
 const marker = createMarker(scene, COLOR.run);
 const weather = createWeather(scene, city, (b, s) => hud.toast(b, s, 2.4));
@@ -236,7 +236,7 @@ function checkRedLight(): void {
 
 // 개발 모드 디버그 훅. 브라우저 콘솔이나 자동 테스트에서 상태를 들여다볼 때 쓴다
 // debugCam 을 채우면 추적 카메라 대신 그 위치에서 본다 (항공 샷)
-const dbg = { debugCam: null as null | { x: number; y: number; z: number; lx: number; lz: number } };
+const dbg = { debugCam: null as null | { x: number; y: number; z: number; lx: number; ly?: number; lz: number } };
 if (import.meta.env.DEV) {
   (window as unknown as { __dc: unknown }).__dc = { player, traffic, battle, run, garage, save, graph, signals, wanted, missions, weather, index, tiles, dbg, scene, world, camera, daylight, chase, city, tileScenes, pedestrians };
 }
@@ -279,7 +279,7 @@ function frame(now: number): void {
   const target = mt ? { ...mt, color: COLOR.mission, label: '미션 목표' }
     : battle.active ? { x: battle.tx, z: battle.tz, color: COLOR.battle, label: '결승 지점' }
       : { x: run.tx, z: run.tz, color: COLOR.run, label: '다음 지점' };
-  marker.setPosition(target.x, target.z);
+  marker.setPosition(target.x, target.z, graph.posY(graph.nearestNode(target.x, target.z)));
   marker.setColor(target.color);
   marker.update(t);
   spotMarkers.forEach((m, i) => {
@@ -340,7 +340,7 @@ function frame(now: number): void {
   if (dbg.debugCam) {
     const c = dbg.debugCam;
     camera.position.set(c.x, c.y, c.z);
-    camera.lookAt(c.lx, 0, c.lz);
+    camera.lookAt(c.lx, c.ly ?? 0, c.lz);
     camera.fov = 55;
     camera.updateProjectionMatrix();
   }
