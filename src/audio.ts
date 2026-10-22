@@ -5,6 +5,8 @@ export interface EngineAudio {
   /** 라디오 등 다른 소리가 붙는 마스터 */
   master: GainNode;
   update(dt: number, freq: number, throttle: boolean, skid: boolean, siren: boolean): void;
+  /** 다른 차의 경적. vol 0..1 (거리로 줄인다), pan -1..1 */
+  horn(vol: number, pan?: number): void;
   toggleMute(): boolean;
   readonly muted: boolean;
   resume(): void;
@@ -80,6 +82,34 @@ export function createAudio(): EngineAudio | null {
           so.frequency.setTargetAtTime(Math.floor(sirenPhase) % 2 ? 880 : 640, t, 0.12);
         }
         sgain.gain.setTargetAtTime(muted || !siren ? 0 : 0.03, t, 0.1);
+      },
+      horn(vol, pan = 0) {
+        if (muted || vol < 0.02) return;
+        const t = ctx.currentTime;
+        const len = 0.28 + Math.random() * 0.25;
+        const base = 400 + Math.random() * 90;
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0, t);
+        g.gain.linearRampToValueAtTime(0.09 * vol, t + 0.02);
+        g.gain.setValueAtTime(0.09 * vol, t + len - 0.05);
+        g.gain.linearRampToValueAtTime(0, t + len);
+        const lp = ctx.createBiquadFilter();
+        lp.type = 'lowpass';
+        lp.frequency.value = 1600;
+        const panner = ctx.createStereoPanner();
+        panner.pan.value = Math.max(-1, Math.min(1, pan));
+        g.connect(lp);
+        lp.connect(panner);
+        panner.connect(master);
+        // 두 음이 섞인 자동차 경적 (장3도)
+        for (const f of [base, base * 1.26]) {
+          const o = ctx.createOscillator();
+          o.type = 'square';
+          o.frequency.value = f;
+          o.connect(g);
+          o.start(t);
+          o.stop(t + len + 0.05);
+        }
       },
       toggleMute() {
         muted = !muted;

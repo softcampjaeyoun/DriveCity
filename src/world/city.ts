@@ -23,11 +23,22 @@ export interface WalkPath {
   cross?: { s0: number; s1: number; node: Node; edge: number };
 }
 
+/** 버스 정류장: 간선 id 와 a 기준 호 길이, 길 어느 쪽인지(+1 = a→b 기준 오른쪽), 대기소 위치 */
+export interface BusStop {
+  key: string;
+  edge: number;
+  s: number;
+  side: 1 | -1;
+  x: number;
+  z: number;
+}
+
 /** 타일 하나의 도시 메시. 타일이 내려가면 dispose */
 export interface TileScene {
   group: THREE.Group;
   obstacles: Obstacle[];
   walks: WalkPath[];
+  stops: BusStop[];
   dispose(): void;
 }
 
@@ -666,6 +677,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
     group.name = `tile:${key}`;
     const obstacles: Obstacle[] = [];
     const walks: TileScene['walks'] = [];
+    const busStops: BusStop[] = [];
     const disposables: Array<{ dispose(): void }> = [];
     const addMesh = (geo: THREE.BufferGeometry, mat: THREE.Material | THREE.Material[], shadow = false): THREE.Mesh => {
       const m = new THREE.Mesh(geo, mat);
@@ -1508,10 +1520,12 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
           shelters.push({ x: px, y: y + 1.3, z: pz, yaw, w: 0.1, h: 2.6, d: 0.1 });
         }
       };
-      const gap = (e: Edge, s: number) => {
+      /** 정류장 기록: 띠녹지를 끊고, 버스가 설 자리를 교통 AI 에 알린다 */
+      const gap = (e: Edge, s: number, side: 1 | -1, x: number, z: number) => {
         const l = hedgeGaps.get(e.id) ?? [];
         l.push(s);
         hedgeGaps.set(e.id, l);
+        busStops.push({ key: `${e.id}:${Math.round(s)}:${side}`, edge: e.id, s, side, x, z });
       };
       const stops = (tile.pois ?? []).filter((p) => p.kind === 'bus_stop');
       if (stops.length) {
@@ -1526,7 +1540,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
           const z = p.z + rz * side * (hit.e.half + 2.2);
           if (inBuilding(x, z)) continue;
           placeShelter(x, z, p.hx * side, p.hz * side, side, walkY(hit.e));
-          gap(hit.e, hit.s);
+          gap(hit.e, hit.s, side, x, z);
         }
       } else {
         for (const e of edges) {
@@ -1539,7 +1553,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
               const z = p.z + rz * side * (e.half + 2.2);
               if (inBuilding(x, z)) continue;
               placeShelter(x, z, p.hx, p.hz, side, walkY(e));
-              gap(e, s);
+              gap(e, s, side as 1 | -1, x, z);
             }
           }
         }
@@ -1836,6 +1850,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
       group,
       obstacles,
       walks,
+      stops: busStops,
       dispose() {
         scene.remove(group);
         group.traverse((o) => {

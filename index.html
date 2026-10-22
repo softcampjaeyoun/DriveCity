@@ -64,13 +64,24 @@
       <kbd>R</kbd> 리셋 · <kbd>C</kbd> 카메라 · <kbd>M</kbd> 소리 · <kbd>Tab</kbd> 지도
     </div>
 
-    <div class="hud panel" id="mapwrap" title="클릭하면 큰 지도"><canvas id="minimap" width="300" height="300"></canvas></div>
+    <div class="hud panel" id="mapwrap" title="클릭하면 큰 지도">
+      <canvas id="minimap" width="300" height="300"></canvas>
+      <div class="mapinfo"><span id="mapNav">다음 지점</span><b class="num" id="mapDist">0 m</b></div>
+    </div>
+
+    <div class="hud panel" id="where"><span id="road">—</span><span class="sep">·</span><span id="place"></span></div>
 
     <div class="hud panel" id="gauge">
-      <div class="speedrow">
-        <span class="num" id="speed">0</span><span class="label">km/h</span><span class="num" id="gear">1</span>
+      <div class="dial">
+        <svg viewBox="0 0 120 70" aria-hidden="true">
+          <path class="track" d="M10 62 A50 50 0 0 1 110 62" />
+          <path class="fill" id="speedArc" d="M10 62 A50 50 0 0 1 110 62" />
+          <path class="track thin" d="M23 62 A37 37 0 0 1 97 62" />
+          <path class="rpm" id="rpmArc" d="M23 62 A37 37 0 0 1 97 62" />
+        </svg>
+        <div class="readout"><span class="num" id="speed">0</span><span class="unit">km/h</span></div>
+        <span class="num gear" id="gear">1</span>
       </div>
-      <div class="bar" id="rpm"><i></i></div>
       <div class="label"><span>부스트</span><span class="num" id="nitroPct">60%</span></div>
       <div class="bar" id="nitro"><i></i></div>
       <div class="label"><span id="carName">시티</span><span class="num" id="carLv">Lv 0</span></div>

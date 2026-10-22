@@ -15,6 +15,8 @@ export interface Pedestrians {
   setNight(night: number): void;
   /** 디버그: 전체 보행자, 횡단보도 위, 신호 대기 중 수 */
   stats(): { total: number; crossing: number; standing: number };
+  /** 승하차 연출: (x0,z0) 에서 (x1,z1) 로 걸어가 사라지는 사람 count 명 (버스 정류장 ↔ 버스 문) */
+  transit(x0: number, z0: number, x1: number, z1: number, count: number, y?: number): void;
 }
 
 export interface WalkSignals {
@@ -42,6 +44,8 @@ interface Walker {
   stoop: number; // 노인 구부정
   skirt: boolean;
   bag: boolean;
+  /** 승하차 연출: 길 끝에 닿으면 사라진다 */
+  transit?: boolean;
 }
 interface Link {
   path: number;
@@ -49,7 +53,8 @@ interface Link {
 }
 interface TilePeds {
   parts: Record<Part, THREE.InstancedMesh>;
-  walkers: Walker[];
+  /** 승하차용 묶음은 빈 자리(null)를 재사용한다 */
+  walkers: Array<Walker | null>;
   walks: WalkPath[];
   /** 길 끝(path:end)에서 이어지는 다른 길 끝들 */
   adj: Map<string, Link[]>;
@@ -105,7 +110,43 @@ export function createPedestrians(scene: THREE.Scene, sig: WalkSignals, density 
   const local = new THREE.Matrix4();
   const scale = new THREE.Matrix4();
   const col = new THREE.Color();
+  const hidden = new THREE.Matrix4().makeScale(0, 0, 0);
   let nightK = 0;
+  const TRANSIT_CAP = 48;
+  const transitRand = mulberry32(4242);
+
+  /** 승하차 연출용 묶음 (자리 48개, 빈 자리를 돌려 쓴다) */
+  function transitTile(): TilePeds {
+    let t = tiles.get('__transit');
+    if (t) return t;
+    const parts = {} as Record<Part, THREE.InstancedMesh>;
+    for (const p of PARTS) {
+      const m = new THREE.InstancedMesh(geo[p], mat, TRANSIT_CAP);
+      m.castShadow = true;
+      m.frustumCulled = false;
+      for (let i = 0; i < TRANSIT_CAP; i++) m.setMatrixAt(i, hidden);
+      parts[p] = m;
+      scene.add(m);
+    }
+    t = { parts, walkers: new Array<Walker | null>(TRANSIT_CAP).fill(null), walks: [], adj: new Map(), fresh: false };
+    tiles.set('__transit', t);
+    return t;
+  }
+  function paint(parts: Record<Part, THREE.InstancedMesh>, i: number, w: Walker, rand: () => number): void {
+    const skin = SKIN[Math.floor(rand() * SKIN.length)];
+    const hair = w.height < 1.5 && w.hair < 0.3 ? HAIR[Math.floor(rand() * 4)] : w.stoop > 0 ? HAIR[4 + Math.floor(rand() * 2)] : HAIR[Math.floor(rand() * 4)];
+    const top = TOPS[Math.floor(rand() * TOPS.length)];
+    const bottom = w.skirt ? TOPS[Math.floor(rand() * TOPS.length)] : BOTTOMS[Math.floor(rand() * BOTTOMS.length)];
+    parts.head.setColorAt(i, col.setHex(skin));
+    parts.hair.setColorAt(i, col.setHex(hair));
+    parts.torso.setColorAt(i, col.setHex(top));
+    parts.armL.setColorAt(i, col.setHex(rand() < 0.5 ? top : skin));
+    parts.armR.setColorAt(i, col.setHex(top));
+    parts.legL.setColorAt(i, col.setHex(bottom));
+    parts.legR.setColorAt(i, col.setHex(bottom));
+    parts.bag.setColorAt(i, col.setHex(BOTTOMS[Math.floor(rand() * BOTTOMS.length)]));
+    for (const p of PARTS) if (parts[p].instanceColor) parts[p].instanceColor.needsUpdate = true;
+  }
 
   function makeWalker(rand: () => number, path: number, len: number): Walker {
     const r = rand();
@@ -193,21 +234,28 @@ export function createPedestrians(scene: THREE.Scene, sig: WalkSignals, density 
         parts[p] = m;
         scene.add(m);
       }
-      walkers.forEach((w, i) => {
-        const skin = SKIN[Math.floor(rand() * SKIN.length)];
-        const hair = w.height < 1.5 && w.hair < 0.3 ? HAIR[Math.floor(rand() * 4)] : w.stoop > 0 ? HAIR[4 + Math.floor(rand() * 2)] : HAIR[Math.floor(rand() * 4)];
-        const top = TOPS[Math.floor(rand() * TOPS.length)];
-        const bottom = w.skirt ? TOPS[Math.floor(rand() * TOPS.length)] : BOTTOMS[Math.floor(rand() * BOTTOMS.length)];
-        parts.head.setColorAt(i, col.setHex(skin));
-        parts.hair.setColorAt(i, col.setHex(hair));
-        parts.torso.setColorAt(i, col.setHex(top));
-        parts.armL.setColorAt(i, col.setHex(rand() < 0.5 ? top : skin));
-        parts.armR.setColorAt(i, col.setHex(top));
-        parts.legL.setColorAt(i, col.setHex(bottom));
-        parts.legR.setColorAt(i, col.setHex(bottom));
-        parts.bag.setColorAt(i, col.setHex(BOTTOMS[Math.floor(rand() * BOTTOMS.length)]));
-      });
+      walkers.forEach((w, i) => paint(parts, i, w, rand));
       tiles.set(key, { parts, walkers, walks: ts.walks, adj: buildAdj(ts.walks), fresh: true });
+    },
+    transit(x0, z0, x1, z1, count, y = 0.12) {
+      const t = transitTile();
+      for (let k = 0; k < count; k++) {
+        const slot = t.walkers.indexOf(null);
+        if (slot < 0) return;
+        // 출발점을 조금씩 흩어 줄지어 걷게
+        const jx = (transitRand() - 0.5) * 1.6;
+        const jz = (transitRand() - 0.5) * 1.6;
+        const pts = [x0 + jx, z0 + jz, x1 + jx * 0.3, z1 + jz * 0.3];
+        const cum = [0, Math.hypot(pts[2] - pts[0], pts[3] - pts[1])];
+        t.walks.push({ pts, nrm: [0, 0, 0, 0], cum, len: cum[1], y, crowd: 0 });
+        const w = makeWalker(transitRand, t.walks.length - 1, 0);
+        w.s = 0;
+        w.dir = 1;
+        w.transit = true;
+        w.speed *= 0.9;
+        t.walkers[slot] = w;
+        paint(t.parts, slot, w, transitRand);
+      }
     },
     removeTile(key) {
       const t = tiles.get(key);
@@ -223,6 +271,7 @@ export function createPedestrians(scene: THREE.Scene, sig: WalkSignals, density 
       for (const t of tiles.values()) {
         let dirty = false;
         t.walkers.forEach((w, i) => {
+          if (!w) return;
           let P = t.walks[w.path];
           // 멀리 있는 보행자는 그대로 둔다 (처음 한 번은 전부 놓는다)
           const here = sampleAt(P, w.s);
@@ -242,6 +291,13 @@ export function createPedestrians(scene: THREE.Scene, sig: WalkSignals, density 
           if (!w.standing) {
             w.s += w.dir * step;
             if (w.s >= P.len || w.s <= 0) {
+              if (w.transit) {
+                // 승하차 연출 끝: 자리를 비우고 숨긴다
+                t.walkers[i] = null;
+                for (const p of PARTS) t.parts[p].setMatrixAt(i, hidden);
+                dirty = true;
+                return;
+              }
               hop(w, t, (Math.sin(w.phase * 7.3 + now) + 1) * 0.5);
               P = t.walks[w.path];
             }
@@ -295,6 +351,7 @@ export function createPedestrians(scene: THREE.Scene, sig: WalkSignals, density 
       let standing = 0;
       for (const t of tiles.values()) {
         for (const w of t.walkers) {
+          if (!w) continue;
           total++;
           if (w.standing) standing++;
           const c = t.walks[w.path].cross;

@@ -7,7 +7,8 @@ import { swapModel } from '../vehicle/models.ts';
 import { buildForKind, buildSedan } from '../vehicle/procedural.ts';
 import { PROBE, RADIUS, type PlayerState } from '../vehicle/player.ts';
 import type { Dir, Edge, Node, RoadGraph, Step } from '../world/graph.ts';
-import { curveBetween, edgeSeg, segPos, turnOf, type EdgeSeg, type Seg } from '../world/roads.ts';
+import type { BusStop } from '../world/city.ts';
+import { curveBetween, edgeSeg, segPos, turnOf, type EdgeSeg, type Seg, type Turn } from '../world/roads.ts';
 import type { Signals } from '../world/signals.ts';
 
 export interface RivalSpec {
@@ -63,7 +64,17 @@ export interface Npc {
   police: PoliceState | null;
   /** 이 차를 낳은 타일. 타일이 내려가면 같이 사라진다. 라이벌·경찰은 null (항상 유지) */
   tile: string | null;
+  /** 다음 교차로에서 할 회전 (planNext 가 정한다) */
+  turn: Turn | null;
+  /** 교차로 너머가 막혀 있어도 그냥 들어가는 성격 (꼬리물기) */
+  boxJumper: boolean;
+  /** 경적 재사용 대기 */
+  hornCool: number;
+  /** 버스: 정류장 정차 남은 시간, 지금 간선에서 이미 선 정류장 */
+  dwell: number;
+  servedStop: string | null;
 }
+
 
 export const RIVALS: readonly RivalSpec[] = [
   { name: '다크나이트', body: 0x15151c, glow: 'rgba(155,92,255,0.85)', hex: '#9b5cff', level: 1, reward: 800, pace: 34, model: 'rival_1' },
@@ -74,13 +85,17 @@ export const RIVALS: readonly RivalSpec[] = [
 export interface TrafficEvents {
   /** 플레이어가 NPC 와 부딪혔을 때. impact 는 상대 속도 m/s */
   onHit(n: Npc, impact: number): void;
+  /** 앞차(또는 플레이어)가 갑자기 끼어들거나 급정거해 경적을 울릴 때 */
+  onHorn?(n: Npc, atPlayer: boolean): void;
+  /** 버스가 정류장에 섰을 때 (승하차 연출용) */
+  onBusStop?(n: Npc, stop: BusStop): void;
 }
 
 export interface Traffic {
   npcs: Npc[];
   police: Npc[];
-  /** 타일이 들어오면 그 타일 도로 길이에 비례해 차를 뿌린다 */
-  addTile(key: string, roadLen: number, cx: number, cz: number): void;
+  /** 타일이 들어오면 그 타일 도로 길이에 비례해 차를 뿌린다. stops 는 그 타일의 버스 정류장 */
+  addTile(key: string, roadLen: number, cx: number, cz: number, stops?: BusStop[]): void;
   removeTile(key: string): void;
   update(dt: number, player: PlayerState, racePace: (n: Npc) => number, chasePace: number): void;
   collidePlayer(S: PlayerState): void;
@@ -91,6 +106,8 @@ export interface Traffic {
   setChase(count: number, playerNode: Node): void;
   /** 0 낮 .. 1 밤: 전조등·후미등 번짐 세기 */
   setNight(night: number): void;
+  /** 디버그: 전체·주변(380m) 대수, 정류장에 선 버스, 지금까지 경적 횟수, 정지선에서 기다리는 차 */
+  stats(S: PlayerState): { total: number; near: number; dwelling: number; horns: number; busStops: number; waiting: number };
 }
 
 const LANE_RATE = 2.2;
@@ -196,6 +213,8 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
     n.next = chooseStep(n, seg);
     const lanes = g.lanes(seg.e, seg.dir);
     const turn = turnFor(seg, n.next);
+    n.turn = turn;
+    n.servedStop = null;
     let lane = n.lane;
     if (turn === 'right') lane = lanes - 1;
     else if (turn === 'left' || turn === 'uturn') lane = 0;
@@ -244,6 +263,11 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
       cool: 0,
       police: built.police,
       tile,
+      turn: null,
+      boxJumper: Math.random() < 0.3,
+      hornCool: Math.random() * 5,
+      dwell: 0,
+      servedStop: null,
     };
     n.latTarget = n.lat;
     planNext(n, seg);
@@ -283,7 +307,45 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
     n.mesh.position.set(n.x, n.y, n.z);
   }
   let persistentSpawned = false;
-  const DENSITY = 1.5; // 도로 1km 당 차량 대수 (3×3 타일 기준 300대 안팎)
+  const DENSITY = 1.6; // 도로 1km 당 차량 대수 (타일마다 뿌리는 바탕 교통)
+  /** 플레이어 주변엔 이만큼은 보이게 채운다 (바탕 교통이 멀리 흩어져 있어도) */
+  const NEAR_R = 380;
+  const NEAR_TARGET = 55;
+  const TOTAL_CAP = 360;
+  let nearSpawnCool = 0;
+  let hornCount = 0;
+  let busStopCount = 0;
+  /** 간선 id → 그 길의 버스 정류장 */
+  const stopsByEdge = new Map<number, BusStop[]>();
+  const stopsByTile = new Map<string, BusStop[]>();
+
+  /** 플레이어 주변 빈 자리에 차 한 대. 눈앞(180m 안)엔 안 띄운다 */
+  function spawnNear(S: PlayerState): void {
+    const mixTotal = TRAFFIC_MIX.reduce((s, [, c]) => s + c, 0);
+    let pick = Math.random() * mixTotal;
+    let id = TRAFFIC_MIX[0][0];
+    for (const [k, c] of TRAFFIC_MIX) {
+      pick -= c;
+      if (pick <= 0) {
+        id = k;
+        break;
+      }
+    }
+    const kind = KINDS[id];
+    let e: Edge | null = null;
+    for (let tries = 0; tries < 12; tries++) {
+      const c = g.randomEdge({ x: S.x, z: S.z, r: NEAR_R + 60 });
+      const d = Math.hypot(c.pts[0] - S.x, c.pts[1] - S.z);
+      if (d >= 180 && c.len >= 20 && !(kind.length > 8 && c.rank >= 6)) {
+        e = c;
+        break;
+      }
+    }
+    if (!e) return;
+    const n = spawn(kind, kind.colors[rint(kind.colors.length)], null, rint(16), { x: e.pts[0], z: e.pts[1], r: 1 }, e.tile);
+    // randomEdge 가 근처 다른 길을 고를 수 있으니, 실제로 선 간선의 타일을 따른다
+    if (n.seg.kind === 'edge') n.tile = n.seg.e.tile;
+  }
 
   function advance(n: Npc): void {
     if (n.seg.kind === 'curve') {
@@ -311,13 +373,14 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
     n.next = st;
   }
 
-  /** 같은 방향으로 앞에 있는 차(또는 플레이어)의 뒷범퍼까지의 거리와 그 차의 속도 */
-  function gapAhead(n: Npc, S: PlayerState, latShift = 0): { gap: number; speed: number } {
+  /** 같은 방향으로 앞에 있는 차(또는 플레이어)의 뒷범퍼까지의 거리와 그 차의 속도. player 는 그게 플레이어인지 */
+  function gapAhead(n: Npc, S: PlayerState, latShift = 0): { gap: number; speed: number; player: boolean } {
     const fx = Math.sin(n.h);
     const fz = Math.cos(n.h);
     const myFront = n.kind.length / 2;
     let best = Infinity;
     let speed = 0;
+    let player = false;
     const test = (ox: number, oz: number, oh: number | null, oHalf: number, ov: number) => {
       const dx = ox - n.x;
       const dz = oz - n.z;
@@ -329,11 +392,74 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
       if (fwd < best) {
         best = Math.max(0, fwd);
         speed = ov;
+        player = oh === null;
       }
     };
     for (const o of npcs) if (o !== n && Math.abs(o.y - n.y) < 2.5) test(o.x, o.z, o.h, o.kind.length / 2, o.speed);
     if (Math.abs(S.y - n.y) < 2.5) test(S.x, S.z, null, 2.1, Math.hypot(S.vx, S.vz));
-    return { gap: best, speed };
+    return { gap: best, speed, player };
+  }
+
+  /** 좌회전·유턴 앞: 맞은편에서 교차로로 들어오는 차가 가까우면 정지선 앞에서 기다린다 */
+  function leftTurnWant(n: Npc): number {
+    if (n.seg.kind !== 'edge' || (n.turn !== 'left' && n.turn !== 'uturn')) return Infinity;
+    const remaining = n.seg.s1 - n.s;
+    if (remaining > 9) return Infinity;
+    const fx = Math.sin(n.h);
+    const fz = Math.cos(n.h);
+    const node = n.seg.node;
+    for (const o of npcs) {
+      if (o === n || Math.abs(o.y - n.y) > 2.5 || Math.abs(o.x - n.x) > 60 || Math.abs(o.z - n.z) > 60) continue;
+      // 같은 교차로를 향해 맞은편에서 오는 차 (진행 방향이 반대) 이거나 교차로 안에서 직진 중인 차
+      const opposite = Math.sin(o.h) * fx + Math.cos(o.h) * fz < -0.6;
+      if (!opposite || o.speed < 1.5) continue;
+      if (o.seg.kind === 'edge' && o.seg.node === node && o.seg.s1 - o.s < 32) return Math.max(0, (remaining - 2) * 1.2);
+      if (o.seg.kind === 'curve' && o.seg.turn === 'straight' && Math.hypot(o.x - n.x, o.z - n.z) < 26) return Math.max(0, (remaining - 2) * 1.2);
+    }
+    return Infinity;
+  }
+
+  /** 교차로 너머(다음 간선 시작)에 선 차가 있으면 교차로를 막지 않게 정지선 앞에서 기다린다. 꼬리물기 성격은 그냥 들어간다 */
+  function exitWant(n: Npc): number {
+    if (n.seg.kind !== 'edge' || !n.next || n.boxJumper) return Infinity;
+    const remaining = n.seg.s1 - n.s;
+    if (remaining > 10) return Infinity;
+    const st = n.next;
+    const need = n.kind.length + 3;
+    for (const o of npcs) {
+      if (o === n || o.seg.kind !== 'edge' || o.seg.e.id !== st.e.id || o.seg.dir !== st.dir || o.speed > 1) continue;
+      if (o.s - o.seg.s0 < need + o.kind.length) return Math.max(0, (remaining - 2) * 1.2);
+    }
+    return Infinity;
+  }
+
+  /** 버스: 지금 간선의 내 쪽 정류장에 다가가면 서서 승하차한다 */
+  function busStopWant(n: Npc, dt: number): number {
+    if (n.dwell > 0) {
+      n.dwell -= dt;
+      return 0;
+    }
+    if (n.seg.kind !== 'edge' || !n.kind.id.startsWith('bus')) return Infinity;
+    const stops = stopsByEdge.get(n.seg.e.id);
+    if (!stops) return Infinity;
+    const e = n.seg.e;
+    for (const st of stops) {
+      if (st.side !== n.seg.dir || st.key === n.servedStop) continue;
+      const sDir = n.seg.dir === 1 ? st.s : e.len - st.s;
+      const ahead = sDir - n.s;
+      if (ahead < -1 || ahead > 45) continue;
+      // 바깥 차선으로, 정류장 1.5m 앞에 멈춘다
+      n.latTarget = g.laneOffset(e, n.seg.dir, g.lanes(e, n.seg.dir) - 1) + 0.5;
+      if (ahead < 1.5 && n.speed < 0.4) {
+        n.dwell = 5 + Math.random() * 4;
+        n.servedStop = st.key;
+        busStopCount++;
+        ev.onBusStop?.(n, st);
+        return 0;
+      }
+      return Math.max(0, (ahead - 1.2) * 1.1);
+    }
+    return Infinity;
   }
 
   /** 옆 차선으로 옮겨도 되는지 (앞뒤 14m 안에 같은 방향 차가 없는지) */
@@ -410,7 +536,13 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
     npcs,
     police,
 
-    addTile(key, roadLen, cx, cz) {
+    addTile(key, roadLen, cx, cz, stops = []) {
+      stopsByTile.set(key, stops);
+      for (const st of stops) {
+        const l = stopsByEdge.get(st.edge) ?? [];
+        l.push(st);
+        stopsByEdge.set(st.edge, l);
+      }
       const near = { x: cx, z: cz, r: 760 };
       const total = Math.round((roadLen / 1000) * DENSITY);
       const mixTotal = TRAFFIC_MIX.reduce((s, [, c]) => s + c, 0);
@@ -430,11 +562,42 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
 
     removeTile(key) {
       for (const n of npcs.slice()) if (n.tile === key) despawn(n);
+      for (const st of stopsByTile.get(key) ?? []) {
+        const l = stopsByEdge.get(st.edge);
+        if (!l) continue;
+        const kept = l.filter((o) => o.key !== st.key);
+        if (kept.length) stopsByEdge.set(st.edge, kept);
+        else stopsByEdge.delete(st.edge);
+      }
+      stopsByTile.delete(key);
     },
 
     update(dt, S, racePace, chasePace) {
       // 로드된 길이 하나도 없는 순간(순간이동 직후)엔 옮길 곳이 없으니 다음 프레임을 기다린다
       const anyRoad = !g.edges[Symbol.iterator]().next().done;
+      // 주변 밀도 유지: 380m 안에 차가 적으면 0.25초마다 한 대씩 채우고, 너무 많으면 먼 차부터 지운다
+      nearSpawnCool -= dt;
+      if (anyRoad && nearSpawnCool <= 0) {
+        nearSpawnCool = 0.25;
+        let near = 0;
+        for (const o of npcs) if (Math.abs(o.x - S.x) < NEAR_R && Math.abs(o.z - S.z) < NEAR_R) near++;
+        if (near < NEAR_TARGET) {
+          if (npcs.length >= TOTAL_CAP) {
+            let far: Npc | null = null;
+            let fd = 0;
+            for (const o of npcs) {
+              if (o.tile === null) continue;
+              const d = Math.abs(o.x - S.x) + Math.abs(o.z - S.z);
+              if (d > fd) {
+                fd = d;
+                far = o;
+              }
+            }
+            if (far && fd > 900) despawn(far);
+          }
+          if (npcs.length < TOTAL_CAP) spawnNear(S);
+        }
+      }
       for (const n of npcs.slice()) {
         // 서 있는 길이 사라졌으면(타일 해제) 일반 차는 없애고, 라이벌·경찰은 옮긴다
         const curEdge = n.seg.kind === 'edge' ? n.seg.e : n.next?.e;
@@ -452,6 +615,7 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
           if (n.seg.kind === 'edge') planNext(n, n.seg);
         }
         let want: number;
+        let panic = false;
         const chasing = !!n.police?.chasing;
         const onCurve = n.seg.kind === 'curve';
         const turning = onCurve && n.seg.kind === 'curve' && n.seg.turn !== 'straight';
@@ -474,7 +638,16 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
           if (n.seg.kind === 'edge' && n.seg.e.rank >= 6) want = Math.min(want, 9);
           const ahead = gapAhead(n, S);
           if (ahead.gap < 14) want = Math.min(want, Math.max(0, (ahead.gap - 4) * 1.4));
-          want = Math.min(want, signalWant(n), yieldWant(n));
+          // 급정거: 앞이 갑자기 막히면(끼어들기) 세게 밟고, 경적을 울린다
+          if (ahead.gap < 7 && ahead.speed < n.speed - 5 && n.speed > 4) {
+            panic = true;
+            if (n.hornCool <= 0 && Math.random() < 0.4) {
+              n.hornCool = 6 + Math.random() * 8;
+              hornCount++;
+              ev.onHorn?.(n, ahead.player);
+            }
+          }
+          want = Math.min(want, signalWant(n), yieldWant(n), leftTurnWant(n), exitWant(n), busStopWant(n, dt));
           considerLaneChange(n, S, ahead);
         }
         if (n.stun > 0) {
@@ -483,9 +656,10 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
         }
         if (n.cool > 0) n.cool -= dt;
         if (n.laneCool > 0) n.laneCool -= dt;
+        if (n.hornCool > 0) n.hornCool -= dt;
         const heavy = n.kind.length > 8 ? 0.6 : 1;
         const braking = want < n.speed - 0.5;
-        n.speed += (want - n.speed) * Math.min(1, dt * (want < n.speed ? 3 : 1.2) * heavy);
+        n.speed += (want - n.speed) * Math.min(1, dt * (want < n.speed ? (panic ? 8 : 3) : 1.2) * heavy);
         const tail = n.mesh.getObjectByName('tailGlow') as THREE.Mesh | undefined;
         if (tail) (tail.material as THREE.MeshBasicMaterial).opacity = braking ? 0.35 + 0.5 * nightK : 0.4 * nightK;
         n.s += n.speed * dt;
@@ -596,6 +770,18 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
     setNight(night) {
       nightK = night;
       headGlowMat.opacity = night;
+    },
+
+    stats(S) {
+      let near = 0;
+      let dwelling = 0;
+      let waiting = 0;
+      for (const o of npcs) {
+        if (Math.abs(o.x - S.x) < NEAR_R && Math.abs(o.z - S.z) < NEAR_R) near++;
+        if (o.dwell > 0) dwelling++;
+        if (o.speed < 0.3 && o.seg.kind === 'edge' && o.seg.s1 - o.s < 12) waiting++;
+      }
+      return { total: npcs.length, near, dwelling, horns: hornCount, busStops: busStopCount, waiting };
     },
 
     setChase(count, playerNode) {

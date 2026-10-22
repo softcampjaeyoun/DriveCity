@@ -6,7 +6,8 @@ const RANK_ORDER = ['neighbourhood', 'quarter', 'suburb', 'village', 'town', 'ci
 export function placeName(g: RoadGraph, n: Node): string {
   const [x, z] = g.pos(n);
   let best = '';
-  let bd = 650;
+  // 서울의 동은 지름 1km 안팎이라 지명 노드에서 1.3km 까지 본다
+  let bd = 1300;
   for (const p of g.index.places) {
     const rank = RANK_ORDER.indexOf(p.rank);
     if (rank < 0) continue;

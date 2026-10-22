@@ -33,7 +33,16 @@ export interface HudFrame {
   carName: string;
   carLv: number;
   status: string;
+  /** 속도계 호의 끝 (km/h). 부스트 최고 속도 */
+  maxKmh: number;
+  /** 지금 달리는 길 이름과 동네 */
+  road: string;
+  place: string;
 }
+
+const ARC = 157.1;
+const RPM_ARC = 116.2;
+const fmtDist = (m: number): string => (m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(m < 10000 ? 1 : 0)} km`);
 
 export interface Hud {
   frame(f: HudFrame): void;
@@ -73,7 +82,13 @@ export function createHud(): Hud {
     status: $('status'),
     speed: $('speed'),
     gear: $('gear'),
-    rpm: $('rpm').firstElementChild as HTMLElement,
+    speedArc: $('speedArc'),
+    rpmArc: $('rpmArc'),
+    where: $('where'),
+    road: $('road'),
+    place: $('place'),
+    mapNav: $('mapNav'),
+    mapDist: $('mapDist'),
     nitro: $('nitro').firstElementChild as HTMLElement,
     nitroPct: $('nitroPct'),
     carName: $('carName'),
@@ -97,7 +112,13 @@ export function createHud(): Hud {
       el.arrowPath.setAttribute('fill', f.navColor);
       el.dist.style.color = f.navColor;
       el.navLabel.textContent = f.navLabel;
-      el.dist.textContent = `${Math.round(f.dist)} m`;
+      el.dist.textContent = fmtDist(f.dist);
+      el.mapNav.textContent = f.navLabel;
+      el.mapDist.textContent = fmtDist(f.dist);
+      el.mapDist.style.color = f.navColor;
+      el.where.classList.toggle('off', !f.road && !f.place);
+      el.road.textContent = f.road || '이름 없는 길';
+      el.place.textContent = f.place;
 
       el.battle.classList.toggle('on', !!f.battle);
       if (f.battle) {
@@ -137,7 +158,10 @@ export function createHud(): Hud {
 
       el.speed.textContent = String(Math.round(f.kmh));
       el.gear.textContent = f.reverse ? 'R' : String(f.gear + 1);
-      el.rpm.style.width = `${(0.15 + f.within * 0.85) * 100}%`;
+      const frac = Math.min(1, f.kmh / Math.max(1, f.maxKmh));
+      el.speedArc.style.strokeDashoffset = `${ARC * (1 - frac)}`;
+      el.speedArc.classList.toggle('hot', frac > 0.78);
+      el.rpmArc.style.strokeDashoffset = `${RPM_ARC * (1 - (0.12 + f.within * 0.88))}`;
       el.nitro.style.width = `${f.nitro * 100}%`;
       el.nitroPct.textContent = `${Math.round(f.nitro * 100)}%`;
       el.carName.textContent = f.carName;

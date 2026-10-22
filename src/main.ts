@@ -94,6 +94,9 @@ let carStats: CarStats = computeStats(CARS[0], emptyParts());
 let carLv = 0;
 let lastModelCar = '';
 let lastHit = 0;
+let whereTimer = 0;
+let roadName = '';
+let placeLabel = '';
 
 const toast = (b: string, s: string, secs?: number) => hud.toast(b, s, secs);
 const run = createRun(graph, { toast, onBest: (t) => hud.setBest(t) });
@@ -112,6 +115,25 @@ const traffic = createTraffic(scene, graph, signals, {
     if (impact < 4 || n.racing || Math.hypot(player.S.vx, player.S.vz) < 7) return;
     wanted.add(n.kind.id === 'police' ? 'hit_police' : 'hit_traffic');
   },
+  onHorn(n, atPlayer) {
+    const S = player.S;
+    const d = Math.hypot(n.x - S.x, n.z - S.z);
+    if (d > 90) return;
+    // 내 차 기준 왼쪽·오른쪽으로 패닝
+    const pan = ((n.x - S.x) * Math.cos(S.h) - (n.z - S.z) * Math.sin(S.h)) / Math.max(8, d);
+    audio?.horn((atPlayer ? 1 : 0.7) / (1 + d / 25), pan);
+  },
+  onBusStop(n, stop) {
+    // 정류장 대기소 ↔ 버스 문(차 오른쪽 가운데) 사이로 타고 내리는 사람
+    const rx = Math.cos(n.h);
+    const rz = -Math.sin(n.h);
+    const doorX = n.x + rx * (n.kind.width / 2 + 0.7);
+    const doorZ = n.z + rz * (n.kind.width / 2 + 0.7);
+    const boarding = 1 + Math.floor(Math.random() * 3);
+    const alighting = Math.floor(Math.random() * 3);
+    pedestrians.transit(stop.x, stop.z, doorX, doorZ, boarding);
+    pedestrians.transit(doorX, doorZ, stop.x + (stop.x - doorX) * 0.5, stop.z + (stop.z - doorZ) * 0.5, alighting);
+  },
 });
 const battle = createBattle(graph, traffic, { toast, pauseRun: () => run.pause(), resumeRun: () => run.resume() });
 const missions = createMissions(graph, { toast, onStart: () => run.pause(), onEnd: () => run.resume() });
@@ -129,7 +151,7 @@ onTileAdd = function* (key, tile) {
   yield 'collision';
   minimap.addTile(key, tile);
   const info = index.tiles.find((t) => t.i === tile.i && t.j === tile.j);
-  traffic.addTile(key, info?.roadLen ?? 0, index.bbox.minX + (tile.i + 0.5) * index.tile, index.bbox.minZ + (tile.j + 0.5) * index.tile);
+  traffic.addTile(key, info?.roadLen ?? 0, index.bbox.minX + (tile.i + 0.5) * index.tile, index.bbox.minZ + (tile.j + 0.5) * index.tile, ts.stops);
   pedestrians.addTile(key, ts);
 };
 onTileRemove = (key) => {
@@ -310,6 +332,16 @@ function frame(now: number): void {
   player.setFlash(flash);
   flash = Math.max(0, flash - dt * 3);
 
+  // 지금 달리는 길·동네 (0.4초마다)
+  whereTimer -= dt;
+  if (whereTimer <= 0) {
+    whereTimer = 0.4;
+    const hit = graph.nearestEdge(S.x, S.z, 30);
+    roadName = hit ? hit.e.name : '';
+    placeLabel = placeName(graph, playerNode);
+    if (placeLabel === roadName) placeLabel = '';
+  }
+
   const dx = target.x - S.x;
   const dz = target.z - S.z;
   const fx = Math.sin(S.h);
@@ -344,6 +376,9 @@ function frame(now: number): void {
     drift: player.driftTimer > 0 && player.driftScore > 5 ? player.driftScore : null,
     carName: carSpec.name,
     carLv,
+    maxKmh: carStats.nitroVmax * 3.6,
+    road: roadName,
+    place: placeLabel,
     status: started ? `${daylight.label} · ${weather.raining ? '비' : '맑음'} · 라디오 ${radio?.name ?? '꺼짐'} · 효과 ${stage.bloom ? '켬' : '끔'} · 타일 ${tiles.loaded.size}${tiles.loading ? ` (+${tiles.loading} 받는 중)` : ''}` : '',
   });
   hud.tick(dt);
