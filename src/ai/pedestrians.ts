@@ -34,7 +34,11 @@ interface TilePeds {
   parts: Record<Part, THREE.InstancedMesh>;
   walkers: Walker[];
   walks: TileScene['walks'];
+  /** 아직 한 번도 자리를 잡지 않음: 첫 갱신 때 거리와 상관없이 전부 놓는다 */
+  fresh: boolean;
 }
+/** 이보다 먼 보행자는 움직이지 않는다 (매 프레임 행렬 수천 개를 올리지 않게) */
+const ACTIVE_DIST = 320;
 type Part = 'head' | 'hair' | 'torso' | 'armL' | 'armR' | 'legL' | 'legR' | 'bag';
 const PARTS: Part[] = ['head', 'hair', 'torso', 'armL', 'armR', 'legL', 'legR', 'bag'];
 
@@ -58,6 +62,8 @@ export function createPedestrians(scene: THREE.Scene, density = 1 / 40): Pedestr
   const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 });
   const tiles = new Map<string, TilePeds>();
   const dummy = new THREE.Object3D();
+  const local = new THREE.Matrix4();
+  const scale = new THREE.Matrix4();
   const col = new THREE.Color();
   let nightK = 0;
 
@@ -88,7 +94,7 @@ export function createPedestrians(scene: THREE.Scene, density = 1 / 40): Pedestr
       const walkers: Walker[] = [];
       ts.walks.forEach((w, seg) => {
         const len = Math.hypot(w.x1 - w.x0, w.z1 - w.z0);
-        const n = Math.floor(len * density + rand());
+        const n = Math.floor(len * density * w.crowd + rand());
         for (let k = 0; k < n; k++) walkers.push(makeWalker(rand, seg));
       });
       if (!walkers.length) return;
@@ -114,7 +120,7 @@ export function createPedestrians(scene: THREE.Scene, density = 1 / 40): Pedestr
         parts.legR.setColorAt(i, col.setHex(bottom));
         parts.bag.setColorAt(i, col.setHex(BOTTOMS[Math.floor(rand() * BOTTOMS.length)]));
       });
-      tiles.set(key, { parts, walkers, walks: ts.walks });
+      tiles.set(key, { parts, walkers, walks: ts.walks, fresh: true });
     },
     removeTile(key) {
       const t = tiles.get(key);
@@ -128,8 +134,15 @@ export function createPedestrians(scene: THREE.Scene, density = 1 / 40): Pedestr
     update(dt, S) {
       const now = performance.now() * 0.001;
       for (const t of tiles.values()) {
+        let dirty = false;
         t.walkers.forEach((w, i) => {
           const seg = t.walks[w.seg];
+          // 멀리 있는 보행자는 그대로 둔다 (처음 한 번은 전부 놓는다)
+          const cx = seg.x0 + (seg.x1 - seg.x0) * w.t;
+          const cz = seg.z0 + (seg.z1 - seg.z0) * w.t;
+          const d = Math.hypot(cx - S.x, cz - S.z);
+          if (!t.fresh && d > ACTIVE_DIST) return;
+          dirty = true;
           const len = Math.hypot(seg.x1 - seg.x0, seg.z1 - seg.z0) || 1;
           w.t += (w.dir * w.speed * dt) / len;
           if (w.t > 1) {
@@ -142,7 +155,6 @@ export function createPedestrians(scene: THREE.Scene, density = 1 / 40): Pedestr
           const x = seg.x0 + (seg.x1 - seg.x0) * w.t;
           const z = seg.z0 + (seg.z1 - seg.z0) * w.t;
           // 차가 가까이 오면 차도에서 먼 쪽(건물 쪽)으로 비킨다
-          const d = Math.hypot(x - S.x, z - S.z);
           const target = d < 5 ? 1.5 : 0;
           w.dodge += (target - w.dodge) * Math.min(1, dt * 6);
           const px = x + seg.nx * w.dodge;
@@ -156,11 +168,11 @@ export function createPedestrians(scene: THREE.Scene, density = 1 / 40): Pedestr
           const torsoLen = 0.5 * s;
           const hipY = legLen + bob;
           const place = (part: Part, ox: number, oy: number, oz: number, rx: number, sx: number, sy: number, sz: number) => {
-            dummy.position.set(px, 0, pz);
+            dummy.position.set(px, seg.y, pz);
             dummy.rotation.set(0, yaw, 0);
             dummy.updateMatrix();
-            const local = new THREE.Matrix4().makeRotationX(rx).setPosition(ox, oy, oz);
-            const scale = new THREE.Matrix4().makeScale(sx, sy, sz);
+            local.makeRotationX(rx).setPosition(ox, oy, oz);
+            scale.makeScale(sx, sy, sz);
             dummy.matrix.multiply(local).multiply(scale);
             t.parts[part].setMatrixAt(i, dummy.matrix);
           };
@@ -176,7 +188,8 @@ export function createPedestrians(scene: THREE.Scene, density = 1 / 40): Pedestr
           place('hair', 0, headY, -w.stoop * 0.22, w.stoop * 0.5, s * (1 + w.hair * 0.15), s * (1 + w.hair * 0.5), s * (1 + w.hair * 0.4));
           place('bag', 0, shoulderY - 0.05, -0.17 * s, 0, w.bag ? s : 0.0001, w.bag ? s : 0.0001, w.bag ? s : 0.0001);
         });
-        for (const p of PARTS) t.parts[p].instanceMatrix.needsUpdate = true;
+        t.fresh = false;
+        if (dirty) for (const p of PARTS) t.parts[p].instanceMatrix.needsUpdate = true;
       }
     },
     setNight(night) {

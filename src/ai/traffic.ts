@@ -433,6 +433,8 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
     },
 
     update(dt, S, racePace, chasePace) {
+      // 로드된 길이 하나도 없는 순간(순간이동 직후)엔 옮길 곳이 없으니 다음 프레임을 기다린다
+      const anyRoad = !g.edges[Symbol.iterator]().next().done;
       for (const n of npcs.slice()) {
         // 서 있는 길이 사라졌으면(타일 해제) 일반 차는 없애고, 라이벌·경찰은 옮긴다
         const curEdge = n.seg.kind === 'edge' ? n.seg.e : n.next?.e;
@@ -441,6 +443,7 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
             despawn(n);
             continue;
           }
+          if (!anyRoad) continue;
           relocate(n, S);
         }
         if (n.next && !g.hasEdge(n.next.e.id)) {

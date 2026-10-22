@@ -46,12 +46,13 @@ await Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, 2500)
 const index = await loadIndex();
 const graph = createGraph(index);
 const signals = createSignals(scene, graph);
-const city = createCity(scene, index);
+const city = createCity(scene, index, stage.renderer);
 const world = createCollisionWorld(graph);
 const minimap = createMinimap(document.getElementById('minimap') as HTMLCanvasElement, graph);
 const pedestrians = createPedestrians(scene);
-// 타일이 들어오고 나갈 때 각 시스템에 알린다. traffic 은 아래에서 만들어지므로 늦게 묶는다
-let onTileAdd: (key: string, tile: TileData) => void = () => {};
+// 타일이 들어오고 나갈 때 각 시스템에 알린다. traffic 은 아래에서 만들어지므로 늦게 묶는다.
+// onTileAdd 는 제너레이터라 타일 관리자가 프레임마다 조금씩 돌린다
+let onTileAdd: (key: string, tile: TileData) => Generator<string, void> = function* () {};
 let onTileRemove: (key: string) => void = () => {};
 const tiles = createTileManager(index, graph, { onAdd: (k, t) => onTileAdd(k, t), onRemove: (k) => onTileRemove(k) });
 goBtn.textContent = '주변 거리를 만드는 중…';
@@ -104,11 +105,14 @@ const spotMarkers = Array.from({ length: SPOTS }, () => createMarker(scene, COLO
 
 // 타일 ↔ 시스템 연결. 순서: 그래프(이미 들어감) → 신호 → 도시 → 충돌 → 미니맵 → 교통 → 보행자
 const tileScenes = new Map<string, TileScene>();
-onTileAdd = (key, tile) => {
+onTileAdd = function* (key, tile) {
   const poles = signals.addTile(key, tile);
-  const ts = city.buildTile(key, tile, graph, signals.has);
+  yield 'signals';
+  const ts = yield* city.buildTile(key, tile, graph, signals.has);
   tileScenes.set(key, ts);
+  yield 'city-end';
   world.addTile(key, tile, [...ts.obstacles, ...poles.map(([x, z]) => ({ x, z, r: 0.16 }))]);
+  yield 'collision';
   minimap.addTile(key, tile);
   const info = index.tiles.find((t) => t.i === tile.i && t.j === tile.j);
   traffic.addTile(key, info?.roadLen ?? 0, index.bbox.minX + (tile.i + 0.5) * index.tile, index.bbox.minZ + (tile.j + 0.5) * index.tile);
@@ -126,7 +130,7 @@ onTileRemove = (key) => {
 // warmup 때 들어온 타일은 traffic 이 없어서 못 받았으니 지금 연결한다
 for (const key of tiles.loaded) {
   const tile = tiles.tileData(key);
-  if (tile) onTileAdd(key, tile);
+  if (tile) for (const _ of onTileAdd(key, tile)) void _;
 }
 const garage = createGarage(document.getElementById('garage') as HTMLElement, {
   onChange(spec, stats, car) {

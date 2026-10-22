@@ -3,6 +3,13 @@ import type { Dir, Edge, Node, PointOn, RoadGraph } from './graph.ts';
 
 export type { Node } from './graph.ts';
 
+/** 연석 높이(m). 인도는 차도보다 이만큼 높다 */
+export const CURB_H = 0.12;
+/** 등급별 인도 폭(m). 큰길(3차로 이하 등급)은 넓고, 동네길은 좁고, 골목은 연석 없이 좁은 띠만 */
+export const walkWidth = (rank: number): number => (rank <= 4 ? 4.5 : rank === 5 ? 2.4 : 1.6);
+/** 이 등급 길에 연석 있는 인도가 있는지 */
+export const hasCurb = (rank: number): boolean => rank <= 5;
+
 /** 간선 위 직선 구간. s 는 진행 시작점 기준 호 길이, [s0, s1] 만 쓴다 */
 export interface EdgeSeg {
   kind: 'edge';

@@ -286,12 +286,11 @@ export function arrowTexture(kind: 'straight' | 'left' | 'right' | 'straightRigh
   return t;
 }
 
-/** 실제 상호 간판 (4:1). 이름 해시로 색을 정해 같은 가게는 늘 같은 색 */
-export function shopNameTexture(name: string, sub = ''): THREE.CanvasTexture {
+/** 상호 간판 한 장을 512×128 기준 좌표로 그린다. 이름 해시로 색을 정해 같은 가게는 늘 같은 색 */
+function drawShopName(g: CanvasRenderingContext2D, name: string, sub: string): void {
   let h = 7;
   for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   const [bg, fg] = SIGN_PALETTE[h % SIGN_PALETTE.length];
-  const [c, g] = canvas(512, 128);
   g.fillStyle = bg;
   g.fillRect(0, 0, 512, 128);
   g.strokeStyle = 'rgba(0,0,0,0.25)';
@@ -308,9 +307,57 @@ export function shopNameTexture(name: string, sub = ''): THREE.CanvasTexture {
     g.fillStyle = fg + 'cc';
     g.fillText(sub, 256, 104);
   }
+}
+
+/** 실제 상호 간판 (4:1) 낱장 */
+export function shopNameTexture(name: string, sub = ''): THREE.CanvasTexture {
+  const [c, g] = canvas(512, 128);
+  drawShopName(g, name, sub);
   const t = toTex(c);
   t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
   return t;
+}
+
+export interface SignAtlas {
+  /** i 번째 칸에 간판 하나를 그린다. 칸 수백 개를 한 번에 그리면 수십 ms 라 호출 쪽에서 나눠 부른다 */
+  draw(i: number, name: string, sub: string): void;
+  /** 다 그린 뒤 텍스처로. 한 번만 */
+  finish(): THREE.CanvasTexture;
+  /** i 번째 칸의 [u0, v0, u1, v1] (v0 아래, v1 위) */
+  uv(i: number): [number, number, number, number];
+}
+/** 타일 하나의 상호 간판을 192×48 칸 count 개(최대 256)로 한 장에 모은다 (가게마다 텍스처를 따로 올리면 첫 프레임이 멈칫한다). 1536² 까지 */
+export function shopNameAtlas(count: number): SignAtlas {
+  const COLS = 8;
+  const CW = 192;
+  const CH = 48;
+  const rows = Math.max(1, Math.ceil(Math.min(count, 256) / COLS));
+  const H = rows * CH;
+  const [c, g] = canvas(COLS * CW, H);
+  return {
+    draw(i, name, sub) {
+      g.save();
+      g.translate((i % COLS) * CW, Math.floor(i / COLS) * CH);
+      g.scale(CW / 512, CH / 128);
+      drawShopName(g, name, sub);
+      g.restore();
+    },
+    finish() {
+      const texture = toTex(c);
+      texture.wrapS = texture.wrapT = THREE.ClampToEdgeWrapping;
+      return texture;
+    },
+    uv(i) {
+      const col = i % COLS;
+      const row = Math.floor(i / COLS);
+      // 캔버스는 위가 0 이지만 텍스처(flipY)는 아래가 0. 칸 테두리가 섞이지 않게 2px 안쪽을 쓴다
+      const u0 = (col * CW + 2) / (COLS * CW);
+      const u1 = ((col + 1) * CW - 2) / (COLS * CW);
+      const v1 = 1 - (row * CH + 2) / H;
+      const v0 = 1 - ((row + 1) * CH - 2) / H;
+      return [u0, v0, u1, v1];
+    },
+  };
 }
 
 /** 지하철 출입구·역 표지 (초록 바탕, 2:1) */

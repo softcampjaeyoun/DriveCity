@@ -1,4 +1,5 @@
 import type { EdgeData, MapIndex, RoadClass, TileData } from './mapdata.ts';
+import { CURB_H, hasCurb, walkWidth } from './roads.ts';
 
 export const LANE_W = 3.3;
 export const CLASS_RANK: Record<RoadClass, number> = { motorway: 0, trunk: 1, primary: 2, secondary: 3, tertiary: 4, unclassified: 5, residential: 6, living_street: 7 };
@@ -382,17 +383,22 @@ export function createGraph(index: MapIndex): RoadGraph {
     posY: (n) => nodes.get(n)?.[2] ?? 0,
     heightAt,
     groundAt(x, z, yRef) {
-      // 후보: 지면(0)과, 이 점을 노면 폭(+난간 여유) 안에 두는 고가·지하 간선들
+      // 후보: 지면(0, 인도 위면 연석 높이)과, 이 점을 노면 폭(+난간 여유) 안에 두는 고가·지하 간선들
+      let ground = 0;
+      let groundHit: EdgeHit | null = null;
       let best = 0;
-      let bestD = Math.abs(yRef);
+      let bestD = Infinity;
       const seen = new Set<number>();
       for (const k of cellsAround(x, z, 16)) {
         for (const id of edgeGrid.get(k) ?? []) {
           if (seen.has(id)) continue;
           seen.add(id);
           const e = edges.get(id)!;
-          if (e.yt === 0) continue;
           const hit = projectOnEdge(e, x, z);
+          if (e.yt === 0) {
+            if (hit.d <= 16 && (!groundHit || hit.d < groundHit.d)) groundHit = hit;
+            continue;
+          }
           if (hit.d > e.half + 2.5) continue;
           const y = heightAt(e, hit.s);
           const d = Math.abs(y - yRef);
@@ -402,7 +408,9 @@ export function createGraph(index: MapIndex): RoadGraph {
           }
         }
       }
-      return best;
+      // 가장 가까운 지상 길의 차도 밖·인도 안이면 연석만큼 올라선다
+      if (groundHit && hasCurb(groundHit.e.rank) && groundHit.d > groundHit.e.half + 0.3 && groundHit.d < groundHit.e.half + walkWidth(groundHit.e.rank)) ground = CURB_H;
+      return Math.abs(ground - yRef) <= bestD ? ground : best;
     },
     degree,
     edgesAt: (n) => (out.get(n) ?? []).map((id) => edges.get(id)!),
