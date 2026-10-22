@@ -1,4 +1,4 @@
-import type { RoadGraph } from './graph.ts';
+import { isFlat, type RoadGraph } from './graph.ts';
 import type { TileData } from './mapdata.ts';
 
 export interface Circle {
@@ -163,8 +163,9 @@ export function createCollisionWorld(g: RoadGraph): CollisionWorld {
       // 고가·다리 난간과 지하차도 옹벽: 높이를 따라가도록 20m 이하로 잘라 넣는다
       for (const d of tile.edges) {
         const e = g.edge(d.id);
-        if (!e || e.yt === 0) continue;
-        const off = e.yt > 0 ? e.half + 0.9 : e.half + 0.7;
+        if (!e || isFlat(e)) continue;
+        const sunken = e.yt < 0 || Math.min(e.ya, e.yb) < 0;
+        const off = sunken ? e.half + 0.7 : e.half + 0.9;
         for (let i = 0; i < e.pts.length - 2; i += 2) {
           const x0 = e.pts[i];
           const z0 = e.pts[i + 1];
@@ -179,7 +180,7 @@ export function createCollisionWorld(g: RoadGraph): CollisionWorld {
             const t1 = (p + 1) / parts;
             const y = g.heightAt(e, e.cum[i / 2] + (l * (t0 + t1)) / 2);
             // 지하차도 옹벽은 노면이 지면 아래로 내려간 곳에만
-            if (e.yt < 0 && y > -0.25) continue;
+            if (sunken && y > -0.25) continue;
             for (const side of [-1, 1]) {
               const ox = nx * off * side;
               const oz = nz * off * side;

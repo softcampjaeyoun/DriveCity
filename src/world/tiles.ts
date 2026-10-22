@@ -8,12 +8,17 @@ export interface TileHandlers {
    */
   onAdd(key: string, tile: TileData): Generator<string, void> | void;
   onRemove(key: string): void;
+  /** 자세히 만들지 않은 바깥 고리(반경 +2 까지) 타일의 저해상도 모습을 보이고 치운다 */
+  onFar?(key: string, tile: TileData): void;
+  onFarRemove?(key: string): void;
 }
 
-/** 플레이어 주변 (2R+1)² 타일만 유지하며 받아오고 지운다 */
+/** 플레이어 주변 (2R+1)² 타일만 유지하며 받아오고 지운다. 그 바깥 두 고리는 데이터만 받아 저해상도로 보인다 */
 export interface TileManager {
   readonly loaded: ReadonlySet<string>;
   readonly loading: number;
+  /** 저해상도로 보이는 타일 수 */
+  readonly farCount: number;
   /** 지금 여러 프레임에 걸쳐 만드는 중인 타일 */
   readonly building: string | null;
   /** 플레이어 위치 기준으로 필요한 타일을 맞춘다. 프레임당 budgetMs 만큼만 일한다 */
@@ -32,6 +37,8 @@ export function createTileManager(index: MapIndex, g: RoadGraph, handlers: TileH
   const infos = new Map<string, TileInfo>();
   for (const t of index.tiles) infos.set(tileKey(t.i, t.j), t);
   const loaded = new Set<string>();
+  /** 저해상도로 보이는 중인 타일 */
+  const far = new Set<string>();
   const data = new Map<string, TileData>();
   const pending = new Map<string, Promise<void>>();
   let job: { key: string; it: Iterator<string, void>; step: number } | null = null;
@@ -75,7 +82,23 @@ export function createTileManager(index: MapIndex, g: RoadGraph, handlers: TileH
     if (profile.length > 200) profile.splice(0, 100);
   };
 
-  /** 타일을 그래프에 넣고 생성 작업을 시작한다. 제너레이터가 아니면 그 자리에서 끝난다 */
+  /** 만드는 중인 타일 키 (함수로 두어 타입 좁히기를 피한다) */
+  const buildingKey = (): string | null => job?.key ?? null;
+  function showFar(key: string): void {
+    const tile = data.get(key);
+    if (!tile || far.has(key) || loaded.has(key) || job?.key === key) return;
+    const t0 = performance.now();
+    handlers.onFar?.(key, tile);
+    far.add(key);
+    mark(`${key} far`, t0);
+  }
+  function hideFar(key: string): void {
+    if (!far.has(key)) return;
+    handlers.onFarRemove?.(key);
+    far.delete(key);
+  }
+
+  /** 타일을 그래프에 넣고 생성 작업을 시작한다. 제너레이터가 아니면 그 자리에서 끝난다. 저해상도 모습은 다 만들어진 뒤에 치운다 */
   function activate(key: string): void {
     const tile = data.get(key);
     if (!tile || loaded.has(key) || job) return;
@@ -84,7 +107,10 @@ export function createTileManager(index: MapIndex, g: RoadGraph, handlers: TileH
     mark(`${key} graph`, t0);
     const r = handlers.onAdd(key, tile);
     if (r && typeof r.next === 'function') job = { key, it: r, step: 0 };
-    else loaded.add(key);
+    else {
+      loaded.add(key);
+      hideFar(key);
+    }
   }
   /** 진행 중인 생성 작업을 budgetMs 동안 돌린다 */
   function pump(budgetMs: number): void {
@@ -97,26 +123,33 @@ export function createTileManager(index: MapIndex, g: RoadGraph, handlers: TileH
       mark(`${job.key} ${done ? '끝' : (r.value ?? `step${job.step}`)}`, ts);
       job.step++;
       if (done) {
-        loaded.add(job.key);
+        const key = job.key;
+        loaded.add(key);
         job = null;
+        hideFar(key);
         return;
       }
     } while (performance.now() - t0 < budgetMs);
   }
-  function deactivate(key: string): void {
+  /** 자세한 타일을 치운다. 아직 바깥 고리 안이면 저해상도로 돌아간다 */
+  function deactivate(key: string, stillFar: boolean): void {
     if (!loaded.has(key)) return;
     const t0 = performance.now();
     handlers.onRemove(key);
     g.removeTile(key);
     loaded.delete(key);
-    data.delete(key);
     mark(`${key} remove`, t0);
+    if (stillFar) showFar(key);
+    else data.delete(key);
   }
 
   return {
     loaded,
     get loading() {
       return pending.size;
+    },
+    get farCount() {
+      return far.size;
     },
     get building() {
       return job?.key ?? null;
@@ -131,12 +164,23 @@ export function createTileManager(index: MapIndex, g: RoadGraph, handlers: TileH
       }
       const want = wanted(x, z, radius);
       const wantSet = new Set(want);
-      // 멀어진 타일은 한 번에 하나씩 정리 (여유 반경 +1 까지는 유지)
+      // 자세한 타일은 여유 반경 +1 까지 유지, 데이터·저해상도는 +2 까지
       const keep = new Set(wanted(x, z, radius + 1));
+      const ring = wanted(x, z, radius + 2);
+      const ringSet = new Set(ring);
+      // 바깥으로 벗어난 저해상도 타일과 데이터는 버린다
+      for (const k of [...far]) {
+        if (!ringSet.has(k)) {
+          hideFar(k);
+          data.delete(k);
+        }
+      }
+      for (const k of [...data.keys()]) if (!ringSet.has(k) && !loaded.has(k) && buildingKey() !== k) data.delete(k);
+      // 멀어진 타일은 한 번에 하나씩 정리
       let removed = false;
       for (const k of loaded) {
         if (!keep.has(k)) {
-          deactivate(k);
+          deactivate(k, ringSet.has(k));
           removed = true;
           break;
         }
@@ -152,8 +196,16 @@ export function createTileManager(index: MapIndex, g: RoadGraph, handlers: TileH
         }
         if (!pending.has(k)) void fetchTile(k);
       }
-      // 미리 받기: 한 칸 더 바깥 타일 데이터를 받아 둔다 (활성화는 안 함)
-      for (const k of keep) if (!wantSet.has(k) && !data.has(k) && !pending.has(k) && pending.size < 2) void fetchTile(k);
+      // 바깥 고리: 데이터를 미리 받아 두고(한 번에 둘), 받아진 것은 저해상도로 보인다 (프레임당 하나)
+      for (const k of ring) {
+        if (wantSet.has(k) || loaded.has(k)) continue;
+        if (data.has(k)) {
+          if (!far.has(k)) {
+            showFar(k);
+            return;
+          }
+        } else if (!pending.has(k) && pending.size < 2) void fetchTile(k);
+      }
     },
     async warmup(x, z) {
       const want = wanted(x, z, radius);

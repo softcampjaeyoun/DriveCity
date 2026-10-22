@@ -23,6 +23,7 @@ import { createPlayer } from './vehicle/player.ts';
 import { CARS, computeStats, emptyParts, partsLevel, type CarSpec, type CarStats } from './vehicle/stats.ts';
 import { createCity, type TileScene } from './world/city.ts';
 import { createCollisionWorld } from './world/collision.ts';
+import { createFarTiles } from './world/far.ts';
 import { createGraph, type Edge } from './world/graph.ts';
 import { loadIndex, type TileData } from './world/mapdata.ts';
 import { createMarker } from './world/markers.ts';
@@ -47,14 +48,26 @@ const index = await loadIndex();
 const graph = createGraph(index);
 const signals = createSignals(scene, graph);
 const city = createCity(scene, index, stage.renderer);
+const farTiles = createFarTiles(scene);
 const world = createCollisionWorld(graph);
 const minimap = createMinimap(document.getElementById('minimap') as HTMLCanvasElement, graph);
-const pedestrians = createPedestrians(scene);
+const pedestrians = createPedestrians(scene, {
+  has: (n) => signals.has(n),
+  walkState: (n, edgeId) => {
+    const e = graph.edge(edgeId);
+    return e ? signals.walkState(n, e) : 'green';
+  },
+});
 // 타일이 들어오고 나갈 때 각 시스템에 알린다. traffic 은 아래에서 만들어지므로 늦게 묶는다.
 // onTileAdd 는 제너레이터라 타일 관리자가 프레임마다 조금씩 돌린다
 let onTileAdd: (key: string, tile: TileData) => Generator<string, void> = function* () {};
 let onTileRemove: (key: string) => void = () => {};
-const tiles = createTileManager(index, graph, { onAdd: (k, t) => onTileAdd(k, t), onRemove: (k) => onTileRemove(k) });
+const tiles = createTileManager(index, graph, {
+  onAdd: (k, t) => onTileAdd(k, t),
+  onRemove: (k) => onTileRemove(k),
+  onFar: (k, t) => farTiles.add(k, t),
+  onFarRemove: (k) => farTiles.remove(k),
+});
 goBtn.textContent = '주변 거리를 만드는 중…';
 await tiles.warmup(index.start.x, index.start.z);
 const player = createPlayer(scene, graph);
@@ -66,6 +79,7 @@ const marker = createMarker(scene, COLOR.run);
 const weather = createWeather(scene, city, (b, s) => hud.toast(b, s, 2.4));
 const daylight = createDaylight(stage, (n) => {
   city.setNight(n);
+  farTiles.setNight(n);
   pedestrians.setNight(n);
   traffic.setNight(n);
 });

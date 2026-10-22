@@ -5,8 +5,11 @@ export const LANE_W = 3.3;
 export const CLASS_RANK: Record<RoadClass, number> = { motorway: 0, trunk: 1, primary: 2, secondary: 3, tertiary: 4, unclassified: 5, residential: 6, living_street: 7 };
 /** 레벨별 노면 높이(m). tools/build-map.mjs 와 같은 값 */
 export const levelHeight = (lv: number): number => (lv > 0 ? 7 + (lv - 1) * 5.5 : lv < 0 ? -6.5 - (-lv - 1) * 5.5 : 0);
-/** 고가·지하차도 진입 경사 */
+/** 고가·지하차도 진입 경사. 연결로(램프)는 더 가파르다 */
 export const SLOPE = 0.06;
+export const slopeOf = (e: { link: boolean }): number => (e.link ? 0.08 : SLOPE);
+/** 지상 평지 간선인지 (레벨 0 이고 양끝 노드도 지면). 아니면 고가·지하·램프 */
+export const isFlat = (e: { yt: number; ya: number; yb: number }): boolean => e.yt === 0 && e.ya === 0 && e.yb === 0;
 
 /** 전역 노드 번호 */
 export type Node = number;
@@ -231,11 +234,15 @@ export function createGraph(index: MapIndex): RoadGraph {
     bump();
   }
 
-  /** 양끝에서 SLOPE 경사로 목표 높이까지 오르내리는 꺾은선 */
+  /** 양끝에서 각각 경사를 따라 목표 높이(yt)로 다가가는 두 꺾은선 중 yt 에서 먼 쪽 (tools/build-map.mjs profileY 와 같은 규칙) */
   const heightAt = (e: Edge, sa: number): number => {
-    if (e.yt === 0) return 0;
+    if (isFlat(e)) return 0;
     const s = Math.min(Math.max(0, sa), e.len);
-    return e.yt > 0 ? Math.min(e.yt, e.ya + SLOPE * s, e.yb + SLOPE * (e.len - s)) : Math.max(e.yt, e.ya - SLOPE * s, e.yb - SLOPE * (e.len - s));
+    const S = slopeOf(e);
+    const toward = (y0: number, dist: number) => y0 + Math.max(-S * dist, Math.min(S * dist, e.yt - y0));
+    const fa = toward(e.ya, s);
+    const fb = toward(e.yb, e.len - s);
+    return Math.abs(fa - e.yt) >= Math.abs(fb - e.yt) ? fa : fb;
   };
 
   const pointAt = (e: Edge, dir: Dir, s: number): PointOn => {
@@ -395,7 +402,7 @@ export function createGraph(index: MapIndex): RoadGraph {
           seen.add(id);
           const e = edges.get(id)!;
           const hit = projectOnEdge(e, x, z);
-          if (e.yt === 0) {
+          if (isFlat(e)) {
             if (hit.d <= 16 && (!groundHit || hit.d < groundHit.d)) groundHit = hit;
             continue;
           }

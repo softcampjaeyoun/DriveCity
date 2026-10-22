@@ -200,15 +200,24 @@ for (const w of highwayWays) {
   }
 }
 
-// ----- 고가·지하차도 높이 (src/world/graph.ts 의 levelHeight/SLOPE 와 같은 값) -----
-// 노드 높이: 지상 도로가 하나라도 닿으면 0, 아니면 가장 지면에 가까운 레벨의 높이. 간선 안에서는 양끝에서 6% 경사로 오르내린다
+// ----- 고가·지하차도 높이 (src/world/graph.ts 의 levelHeight/SLOPE/slopeOf/heightAt 와 같은 규칙) -----
+// 노드 높이: (연결로가 아닌) 지상 도로가 하나라도 닿으면 0, 아니면 가장 지면에 가까운 레벨의 높이.
+// bridge 태그 없는 연결로(link)가 고가 중간 노드에서 갈라지면 노드는 고가 높이를 유지하고 연결로가 램프가 되어 내려온다.
+// 간선 안에서는 양끝에서 6%(연결로 8%) 경사로 목표 높이까지 오르내린다
 const levelHeight = (lv) => (lv > 0 ? 7 + (lv - 1) * 5.5 : lv < 0 ? -6.5 - (-lv - 1) * 5.5 : 0);
 const SLOPE = 0.06;
+const slopeOf = (e) => (e.link ? 0.08 : SLOPE);
 const nodeY = new Array(nodes.length).fill(0);
 {
   const lvAt = nodes.map(() => new Set());
-  for (const e of edges) { lvAt[e.a].add(e.lv); lvAt[e.b].add(e.lv); }
-  lvAt.forEach((set, n) => {
+  const lvLinkAt = nodes.map(() => new Set());
+  for (const e of edges) {
+    const at = e.link ? lvLinkAt : lvAt;
+    at[e.a].add(e.lv);
+    at[e.b].add(e.lv);
+  }
+  lvAt.forEach((main, n) => {
+    const set = main.size ? main : lvLinkAt[n];
     if (set.has(0)) return;
     let pos = Infinity;
     let neg = -Infinity;
@@ -219,7 +228,7 @@ const nodeY = new Array(nodes.length).fill(0);
   for (let iter = 0; iter < 60; iter++) {
     let changed = false;
     for (const e of edges) {
-      const lim = SLOPE * e.len;
+      const lim = slopeOf(e) * e.len;
       const ya = nodeY[e.a];
       const yb = nodeY[e.b];
       if (yb > ya + lim) { nodeY[e.b] = Math.max(0, ya + lim); changed = true; }
@@ -232,13 +241,19 @@ const nodeY = new Array(nodes.length).fill(0);
   // 양끝이 지면인 60m 미만 다리·굴은 혹처럼 솟지 않게 평탄하게 둔다 (개천 위 작은 다리 등)
   for (const e of edges) if (e.lv !== 0 && e.len < 60 && nodeY[e.a] === 0 && nodeY[e.b] === 0) e.lv = 0;
 }
-/** 간선 a 에서 s 만큼 간 지점의 노면 높이 */
+/** 지상 평지 간선인지 (레벨 0 이고 양끝도 지면) */
+const isFlat = (e) => e.lv === 0 && nodeY[e.a] === 0 && nodeY[e.b] === 0;
+/** 간선 a 에서 s 만큼 간 지점의 노면 높이. 양끝에서 각각 목표 높이(yt)로 경사를 따라 다가가는 두 꺾은선 중 yt 에서 먼 쪽 */
 const profileY = (e, s) => {
   const yt = levelHeight(e.lv);
-  if (yt === 0) return 0;
   const ya = nodeY[e.a];
   const yb = nodeY[e.b];
-  return yt > 0 ? Math.min(yt, ya + SLOPE * s, yb + SLOPE * (e.len - s)) : Math.max(yt, ya - SLOPE * s, yb - SLOPE * (e.len - s));
+  if (yt === 0 && ya === 0 && yb === 0) return 0;
+  const S = slopeOf(e);
+  const toward = (y0, dist) => y0 + Math.max(-S * dist, Math.min(S * dist, yt - y0));
+  const fa = toward(ya, s);
+  const fb = toward(yb, e.len - s);
+  return Math.abs(fa - yt) >= Math.abs(fb - yt) ? fa : fb;
 };
 
 // ----- 폴리곤 유틸 -----
@@ -533,7 +548,7 @@ for (const n of osmNodes.values()) {
   };
   // 고가·다리 밑과 지하차도의 트인 구간(깊이 4.5m 미만)에 걸친 실제 건물은 뺀다. 덮인 지하 구간 위 건물은 남긴다
   {
-    const elevated = edges.filter((e) => e.lv !== 0);
+    const elevated = edges.filter((e) => !isFlat(e));
     const distToEdge = (e, x, z) => {
       let best = Infinity;
       let cum = 0;
@@ -543,7 +558,7 @@ for (const n of osmNodes.values()) {
         const l = Math.sqrt(l2);
         const t = Math.min(1, Math.max(0, ((x - x0) * dx + (z - z0) * dz) / l2));
         const d = Math.hypot(x - (x0 + dx * t), z - (z0 + dz * t));
-        if (d < best && (e.lv > 0 || profileY(e, cum + l * t) > -4.5)) best = d;
+        if (d < best && (profileY(e, cum + l * t) > -4.5)) best = d;
         cum += l;
       }
       return best;
@@ -645,8 +660,12 @@ const nodeOut = (id) => [id, nodes[id][0], nodes[id][1], Math.round(nodeY[id] * 
 {
   const lvCount = {};
   let elevLen = 0;
-  for (const e of edges) if (e.lv !== 0) { lvCount[e.lv] = (lvCount[e.lv] ?? 0) + 1; elevLen += e.len; }
-  console.log(`  고가·지하 간선 ${Math.round(elevLen / 100) / 10} km`, lvCount);
+  let ramps = 0;
+  for (const e of edges) {
+    if (e.lv !== 0) { lvCount[e.lv] = (lvCount[e.lv] ?? 0) + 1; elevLen += e.len; }
+    else if (!isFlat(e)) ramps++;
+  }
+  console.log(`  고가·지하 간선 ${Math.round(elevLen / 100) / 10} km`, lvCount, `램프(레벨 0, 끝이 높음) ${ramps}`);
 }
 const placesOut = [...new Map(places.map((p) => [p.name, p])).values()];
 const bbox = { minX: Math.round(minX), maxX: Math.round(maxX), minZ: Math.round(minZ), maxZ: Math.round(maxZ) };
