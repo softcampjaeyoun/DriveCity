@@ -26,6 +26,8 @@ export interface CollisionWorld {
   /** 물 위이고 다리 위가 아니면 true */
   inWater(x: number, z: number, y?: number): boolean;
   addTile(key: string, tile: TileData, obstacles: Obstacle[]): void;
+  /** 타일 상세(주차 차량 등)의 충돌체만. key 는 타일 키와 다르게(예: `${key}#x`) 두고 removeTile 로 치운다 */
+  addExtras(key: string, obstacles: Obstacle[]): void;
   removeTile(key: string): void;
 }
 
@@ -179,8 +181,8 @@ export function createCollisionWorld(g: RoadGraph): CollisionWorld {
             const t0 = p / parts;
             const t1 = (p + 1) / parts;
             const y = g.heightAt(e, e.cum[i / 2] + (l * (t0 + t1)) / 2);
-            // 지하차도 옹벽은 노면이 지면 아래로 내려간 곳에만
-            if (sunken && y > -0.25) continue;
+            // 지하차도 옹벽은 노면이 지면 아래로 내려간 곳에만 (지형 제외 레벨 높이로 판단)
+            if (sunken && g.levelAt(e, e.cum[i / 2] + (l * (t0 + t1)) / 2) > -0.25) continue;
             for (const side of [-1, 1]) {
               const ox = nx * off * side;
               const oz = nz * off * side;
@@ -194,6 +196,9 @@ export function createCollisionWorld(g: RoadGraph): CollisionWorld {
         key,
         tile.water.map((r) => makePoly(r, key)),
       );
+    },
+    addExtras(key, obstacles) {
+      for (const o of obstacles) addObs(o, key);
     },
     removeTile(key) {
       for (const [k, list] of grid) {

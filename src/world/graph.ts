@@ -1,4 +1,5 @@
 import type { EdgeData, MapIndex, RoadClass, TileData } from './mapdata.ts';
+import type { Terrain } from './terrain.ts';
 import { CURB_H, hasCurb, walkWidth } from './roads.ts';
 
 export const LANE_W = 3.3;
@@ -89,11 +90,15 @@ export interface RoadGraph {
   hasEdge(id: number): boolean;
   edge(id: number): Edge | undefined;
   pos(n: Node): [number, number];
-  /** 노드의 노면 높이 */
+  /** 노드의 노면 높이 (지형 포함) */
   posY(n: Node): number;
-  /** 간선 a 쪽 끝에서 sa 만큼 간 지점의 노면 높이 */
+  /** 간선 a 쪽 끝에서 sa 만큼 간 지점의 노면 높이 (지형 포함) */
   heightAt(e: Edge, sa: number): number;
-  /** (x, z) 아래 노면 높이. 고가와 지상 도로가 겹치는 곳은 yRef 에 가까운 면을 고른다. 길 밖이면 0 */
+  /** 같은 지점의 레벨 높이만 (지형 제외: 고가 +, 지하차도 -, 지상 0) */
+  levelAt(e: Edge, sa: number): number;
+  /** (x, z) 지형 높이 (한강 수면 0 기준). 타일이 없으면 0 */
+  terrainAt(x: number, z: number): number;
+  /** (x, z) 아래 노면 높이. 고가와 지상 도로가 겹치는 곳은 yRef 에 가까운 면을 고른다. 길 밖이면 지형 높이 */
   groundAt(x: number, z: number, yRef: number): number;
   degree(n: Node): number;
   edgesAt(n: Node): Edge[];
@@ -123,7 +128,7 @@ export interface RoadGraph {
 const CELL = 40;
 const cellKey = (x: number, z: number) => `${Math.floor(x / CELL)},${Math.floor(z / CELL)}`;
 
-export function createGraph(index: MapIndex): RoadGraph {
+export function createGraph(index: MapIndex, terrain?: Terrain): RoadGraph {
   const nodes = new Map<Node, [number, number, number]>();
   const nodeRef = new Map<Node, number>();
   const edges = new Map<number, Edge>();
@@ -247,8 +252,8 @@ export function createGraph(index: MapIndex): RoadGraph {
     bump();
   }
 
-  /** 양끝에서 각각 경사를 따라 목표 높이(yt)로 다가가는 두 꺾은선 중 yt 에서 먼 쪽 (tools/build-map.mjs profileY 와 같은 규칙) */
-  const heightAt = (e: Edge, sa: number): number => {
+  /** 양끝에서 각각 경사를 따라 목표 높이(yt)로 다가가는 두 꺾은선 중 yt 에서 먼 쪽 (tools/build-map.mjs profileY 와 같은 규칙). 지형 제외 */
+  const levelAt = (e: Edge, sa: number): number => {
     if (isFlat(e)) return 0;
     const s = Math.min(Math.max(0, sa), e.len);
     const S = slopeOf(e);
@@ -256,6 +261,40 @@ export function createGraph(index: MapIndex): RoadGraph {
     const fa = toward(e.ya, s);
     const fb = toward(e.yb, e.len - s);
     return Math.abs(fa - e.yt) >= Math.abs(fb - e.yt) ? fa : fb;
+  };
+  const terrainAt = (x: number, z: number): number => (terrain ? terrain.at(x, z) : 0);
+  /** 간선 위 (x,z) 가 알려진 지점의 노면 높이: 지상 간선은 지형을 그대로 따라가고, 고가·지하·램프는 양끝 지형을 직선 보간한 바닥 위에 레벨 높이를 얹는다 (다리가 강바닥을 따라 처지지 않게) */
+  const heightAtXZ = (e: Edge, sa: number, x: number, z: number): number => {
+    if (!terrain) return levelAt(e, sa);
+    if (isFlat(e)) return terrain.at(x, z);
+    const a = nodes.get(e.a);
+    const b = nodes.get(e.b);
+    const ga = a ? terrain.at(a[0], a[1]) : 0;
+    const gb = b ? terrain.at(b[0], b[1]) : ga;
+    const t = e.len > 0 ? Math.min(1, Math.max(0, sa / e.len)) : 0;
+    return ga + (gb - ga) * t + levelAt(e, sa);
+  };
+  const locate = (e: Edge, sa: number): { x: number; z: number; hx: number; hz: number } => {
+    const cum = e.cum;
+    let lo = 0;
+    let hi = cum.length - 2;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (cum[mid] <= sa) lo = mid;
+      else hi = mid - 1;
+    }
+    const segLen = cum[lo + 1] - cum[lo] || 1;
+    const t = Math.min(1, Math.max(0, (sa - cum[lo]) / segLen));
+    const x0 = e.pts[lo * 2];
+    const z0 = e.pts[lo * 2 + 1];
+    const x1 = e.pts[lo * 2 + 2];
+    const z1 = e.pts[lo * 2 + 3];
+    return { x: x0 + (x1 - x0) * t, z: z0 + (z1 - z0) * t, hx: (x1 - x0) / segLen, hz: (z1 - z0) / segLen };
+  };
+  const heightAt = (e: Edge, sa: number): number => {
+    const s = Math.min(Math.max(0, sa), e.len);
+    const q = locate(e, s);
+    return heightAtXZ(e, s, q.x, q.z);
   };
 
   const pointAt = (e: Edge, dir: Dir, s: number): PointOn => {
@@ -280,7 +319,9 @@ export function createGraph(index: MapIndex): RoadGraph {
       hx = -hx;
       hz = -hz;
     }
-    return { x: x0 + (x1 - x0) * t, z: z0 + (z1 - z0) * t, y: heightAt(e, sa), hx, hz };
+    const x = x0 + (x1 - x0) * t;
+    const z = z0 + (z1 - z0) * t;
+    return { x, z, y: heightAtXZ(e, sa, x, z), hx, hz };
   };
 
   function projectOnEdge(e: Edge, x: number, z: number): EdgeHit {
@@ -400,11 +441,16 @@ export function createGraph(index: MapIndex): RoadGraph {
       const p = nodes.get(n);
       return p ? [p[0], p[1]] : [0, 0];
     },
-    posY: (n) => nodes.get(n)?.[2] ?? 0,
+    posY: (n) => {
+      const p = nodes.get(n);
+      return p ? p[2] + terrainAt(p[0], p[1]) : 0;
+    },
     heightAt,
+    levelAt,
+    terrainAt,
     groundAt(x, z, yRef) {
-      // 후보: 지면(0, 인도 위면 연석 높이)과, 이 점을 노면 폭(+난간 여유) 안에 두는 고가·지하 간선들
-      let ground = 0;
+      // 후보: 지면(지형, 인도 위면 연석 높이)과, 이 점을 노면 폭(+난간 여유) 안에 두는 고가·지하 간선들
+      let ground = terrainAt(x, z);
       let groundHit: EdgeHit | null = null;
       let best = 0;
       let bestD = Infinity;
@@ -429,7 +475,7 @@ export function createGraph(index: MapIndex): RoadGraph {
         }
       }
       // 가장 가까운 지상 길의 차도 밖·인도 안이면 연석만큼 올라선다
-      if (groundHit && hasCurb(groundHit.e.rank) && groundHit.d > groundHit.e.half + 0.3 && groundHit.d < groundHit.e.half + walkWidth(groundHit.e.rank)) ground = CURB_H;
+      if (groundHit && hasCurb(groundHit.e.rank) && groundHit.d > groundHit.e.half + 0.3 && groundHit.d < groundHit.e.half + walkWidth(groundHit.e.rank)) ground += CURB_H;
       return Math.abs(ground - yRef) <= bestD ? ground : best;
     },
     degree,

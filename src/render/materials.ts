@@ -80,7 +80,10 @@ export function withGrime<T extends THREE.Material>(mat: T, opt: GrimeOptions = 
   const detail = opt.detail ?? 7;
   const baseHeight = opt.baseHeight ?? 0;
   const baseStrength = opt.baseStrength ?? 0;
-  mat.onBeforeCompile = (shader) => {
+  const prev = mat.onBeforeCompile;
+  const prevKey = mat.customProgramCacheKey;
+  mat.onBeforeCompile = (shader, renderer) => {
+    prev?.(shader, renderer);
     shader.uniforms.grimeMap = { value: grimeTexture() };
     shader.uniforms.grimeParams = { value: new THREE.Vector4(1 / scale, strength, detail > 0 ? 1 / detail : 0, 0) };
     shader.uniforms.grimeBase = { value: new THREE.Vector2(baseHeight, baseStrength) };
@@ -113,6 +116,38 @@ export function withGrime<T extends THREE.Material>(mat: T, opt: GrimeOptions = 
 }`,
       );
   };
-  mat.customProgramCacheKey = () => 'grime';
+  mat.customProgramCacheKey = () => `${prevKey ? prevKey.call(mat) : ''}|grime`;
+  return mat;
+}
+
+/**
+ * 지형 재질: 꼭짓점 속성 park(0..1) 가 1 인 곳은 잔디 질감으로 섞는다 (공원을 지형에 그린다).
+ * withGrime 과 함께 쓸 수 있다 (onBeforeCompile 이 이어진다)
+ */
+export function withParkMask<T extends THREE.Material>(mat: T, grass: THREE.Texture, grassRepeat = 4, grassTint = new THREE.Color(0x9aa684)): T {
+  const prev = mat.onBeforeCompile;
+  const prevKey = mat.customProgramCacheKey;
+  mat.onBeforeCompile = (shader, renderer) => {
+    prev?.(shader, renderer);
+    shader.uniforms.parkMap = { value: grass };
+    shader.uniforms.parkRepeat = { value: grassRepeat };
+    shader.uniforms.parkTint = { value: grassTint };
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float park;\nvarying float vPark;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvPark = park;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vPark;\nuniform sampler2D parkMap;\nuniform float parkRepeat;\nuniform vec3 parkTint;')
+      .replace(
+        '#include <map_fragment>',
+        `#include <map_fragment>
+{
+  #ifdef USE_MAP
+  vec4 pk = texture2D( parkMap, vMapUv * parkRepeat );
+  diffuseColor.rgb = mix( diffuseColor.rgb, pk.rgb * parkTint, smoothstep( 0.15, 0.85, vPark ) );
+  #endif
+}`,
+      );
+  };
+  mat.customProgramCacheKey = () => `${prevKey ? prevKey.call(mat) : ''}|park`;
   return mat;
 }

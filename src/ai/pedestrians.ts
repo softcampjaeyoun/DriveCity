@@ -22,6 +22,8 @@ export interface Pedestrians {
 export interface WalkSignals {
   has(n: Node): boolean;
   walkState(n: Node, edgeId: number): 'red' | 'green' | 'yellow';
+  /** (x,z) 지형 높이. 보행로의 y 는 지형 위 상대 높이(연석)라 더해 쓴다 */
+  terrainAt(x: number, z: number): number;
 }
 
 type Kind = 'man' | 'woman' | 'boy' | 'girl' | 'elder_m' | 'elder_f';
@@ -318,7 +320,7 @@ export function createPedestrians(scene: THREE.Scene, sig: WalkSignals, density 
           const torsoLen = 0.5 * s;
           const hipY = legLen + bob;
           const place = (part: Part, ox: number, oy: number, oz: number, rx: number, sx: number, sy: number, sz: number) => {
-            dummy.position.set(px, P.y, pz);
+            dummy.position.set(px, P.y + sig.terrainAt(px, pz), pz);
             dummy.rotation.set(0, yaw, 0);
             dummy.updateMatrix();
             local.makeRotationX(rx).setPosition(ox, oy, oz);

@@ -55,6 +55,10 @@ export interface MapIndex {
   places: PlaceData[];
   tiles: TileInfo[];
   overview: { file: string; scale: number; w: number; h: number };
+  /** 타일 높이맵 격자 (tools/add-dem.mjs). 없으면 평평한 맵 */
+  hm?: { n: number; step: number };
+  /** DEM 기준 높이(한강 수면, 해발 m) */
+  demRef?: number;
 }
 
 export interface PoiData {
@@ -79,6 +83,10 @@ export interface TileData {
   rails: number[][];
   /** 신호등이 있는 노드 번호 */
   signals: number[];
+  /** 지형 높이맵: index.hm.n² 개, 데시미터 정수, 행이 z 방향 */
+  hm?: number[];
+  /** 숲 마스크: 같은 격자, 도로·건물에서 먼 땅 = 1 (잔디·나무로 덮는다) */
+  gm?: number[];
 }
 
 export const MAP_BASE = `${import.meta.env.BASE_URL}map/seoul/`;

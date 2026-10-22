@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { CLASS_RANK, levelHeight } from './graph.ts';
-import type { TileData } from './mapdata.ts';
+import type { MapIndex, TileData } from './mapdata.ts';
+import type { Terrain } from './terrain.ts';
 
 /**
  * 멀리 있는(아직 자세히 만들지 않은) 타일의 저해상도 모습: 건물은 단색 상자, 큰길은 어두운 띠, 물은 평면.
@@ -15,8 +16,10 @@ export interface FarTiles {
 
 const KIND_COLOR: Record<string, number> = { tower: 0x7d8794, block: 0x8b8a86, low: 0x948d84, apt: 0xb6b9bf };
 
-export function createFarTiles(scene: THREE.Scene): FarTiles {
+export function createFarTiles(scene: THREE.Scene, index: MapIndex, terrain: Terrain): FarTiles {
   const bldMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+  const terrainMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+  void index;
   const roadMat = new THREE.MeshBasicMaterial({ color: 0x45484f });
   const waterMat = new THREE.MeshBasicMaterial({ color: 0x3d7bb5 });
   const groups = new Map<string, THREE.Group>();
@@ -25,6 +28,24 @@ export function createFarTiles(scene: THREE.Scene): FarTiles {
   const build = (tile: TileData): THREE.Group => {
     const group = new THREE.Group();
     group.name = `far:${tile.i}_${tile.j}`;
+    const gAt = (x: number, z: number) => terrain.at(x, z);
+    // ----- 지형 (공원은 초록) -----
+    const tg = terrain.geometry(tile, true);
+    if (tg) {
+      const cnt = tg.attributes.position.count;
+      const pk = tg.attributes.park as THREE.BufferAttribute;
+      const tc = new Float32Array(cnt * 3);
+      for (let k = 0; k < cnt; k++) {
+        const p = pk.getX(k);
+        tc[k * 3] = 0.52 - 0.2 * p;
+        tc[k * 3 + 1] = 0.53 - 0.06 * p;
+        tc[k * 3 + 2] = 0.55 - 0.3 * p;
+      }
+      tg.setAttribute('color', new THREE.BufferAttribute(tc, 3));
+      const tm = new THREE.Mesh(tg, terrainMat);
+      tm.renderOrder = -1;
+      group.add(tm);
+    }
     // ----- 건물 상자 -----
     const pos: number[] = [];
     const nrm: number[] = [];
@@ -42,6 +63,7 @@ export function createFarTiles(scene: THREE.Scene): FarTiles {
       }
       cx /= n;
       cz /= n;
+      const gy = gAt(cx, cz);
       // 종류별 색에 약간의 편차. 윗면은 조금 어둡게
       col.setHex(KIND_COLOR[b.kind] ?? 0x8a8a8a).multiplyScalar(0.9 + ((Math.abs(ring[0] * 7 + ring[1] * 13) % 17) / 17) * 0.18);
       const r = col.r;
@@ -62,7 +84,7 @@ export function createFarTiles(scene: THREE.Scene): FarTiles {
           nz = -nz;
         }
         const base = pos.length / 3;
-        pos.push(x0, 0, z0, x1, 0, z1, x1, b.h, z1, x0, b.h, z0);
+        pos.push(x0, gy - 1, z0, x1, gy - 1, z1, x1, gy + b.h, z1, x0, gy + b.h, z0);
         for (let k = 0; k < 4; k++) {
           nrm.push(nx, 0, nz);
           colors.push(r, gc, bl);
@@ -75,11 +97,11 @@ export function createFarTiles(scene: THREE.Scene): FarTiles {
       // 지붕: 무게중심 부채꼴 (멀리서 보니 오목한 건물도 그냥 덮는다)
       if (n <= 48) {
         const base = pos.length / 3;
-        pos.push(cx, b.h, cz);
+        pos.push(cx, gy + b.h, cz);
         nrm.push(0, 1, 0);
         colors.push(r * 0.85, gc * 0.85, bl * 0.85);
         for (let i = 0; i < n; i++) {
-          pos.push(ring[i * 2], b.h, ring[i * 2 + 1]);
+          pos.push(ring[i * 2], gy + b.h, ring[i * 2 + 1]);
           nrm.push(0, 1, 0);
           colors.push(r * 0.85, gc * 0.85, bl * 0.85);
         }
@@ -112,7 +134,15 @@ export function createFarTiles(scene: THREE.Scene): FarTiles {
       if (rank > 4) continue;
       const lanes = e.lb === 0 ? e.lf : e.lf + e.lb;
       const half = (lanes * 3.3) / 2 + 0.3;
-      const y = 0.03 + levelHeight(e.lv ?? 0);
+      const lvY = 0.05 + levelHeight(e.lv ?? 0);
+      // 고가·지하는 양끝 지형을 직선 보간한 바닥 위 (graph.heightAt 과 같은 규칙), 지상은 25m 마다 지형을 따라간다
+      const na = e.pts.length / 2;
+      const ga = gAt(e.pts[0], e.pts[1]);
+      const gb = gAt(e.pts[na * 2 - 2], e.pts[na * 2 - 1]);
+      let cum = 0;
+      let total = 0;
+      for (let i = 0; i < e.pts.length - 2; i += 2) total += Math.hypot(e.pts[i + 2] - e.pts[i], e.pts[i + 3] - e.pts[i + 1]);
+      const yAt = (x: number, z: number, s: number) => (e.lv ? ga + (gb - ga) * (total ? s / total : 0) + lvY : gAt(x, z) + lvY);
       for (let i = 0; i < e.pts.length - 2; i += 2) {
         const x0 = e.pts[i];
         const z0 = e.pts[i + 1];
@@ -121,9 +151,21 @@ export function createFarTiles(scene: THREE.Scene): FarTiles {
         const l = Math.hypot(x1 - x0, z1 - z0) || 1;
         const nx = (-(z1 - z0) / l) * half;
         const nz = ((x1 - x0) / l) * half;
-        const base = rp.length / 3;
-        rp.push(x0 - nx, y, z0 - nz, x0 + nx, y, z0 + nz, x1 + nx, y, z1 + nz, x1 - nx, y, z1 - nz);
-        ri.push(base, base + 1, base + 2, base, base + 2, base + 3);
+        const parts = e.lv ? 1 : Math.max(1, Math.ceil(l / 25));
+        for (let p = 0; p < parts; p++) {
+          const t0 = p / parts;
+          const t1 = (p + 1) / parts;
+          const ax = x0 + (x1 - x0) * t0;
+          const az = z0 + (z1 - z0) * t0;
+          const bx = x0 + (x1 - x0) * t1;
+          const bz = z0 + (z1 - z0) * t1;
+          const ya = yAt(ax, az, cum + l * t0);
+          const yb = yAt(bx, bz, cum + l * t1);
+          const base = rp.length / 3;
+          rp.push(ax - nx, ya, az - nz, ax + nx, ya, az + nz, bx + nx, yb, bz + nz, bx - nx, yb, bz - nz);
+          ri.push(base, base + 1, base + 2, base, base + 2, base + 3);
+        }
+        cum += l;
       }
     }
     if (ri.length) {
@@ -189,6 +231,7 @@ export function createFarTiles(scene: THREE.Scene): FarTiles {
       bldMat.color.setHex(0xffffff).lerp(new THREE.Color(0x404654), night);
       bldMat.emissive.setHex(0x000000).lerp(new THREE.Color(0x2a2418), night);
       roadMat.color.setHex(0x45484f).lerp(new THREE.Color(0x1d1f26), night);
+      terrainMat.color.setHex(0xffffff).lerp(new THREE.Color(0x3a3d48), night);
       waterMat.color.setHex(0x3d7bb5).lerp(new THREE.Color(0x1a3a66), night);
     },
   };

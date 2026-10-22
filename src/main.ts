@@ -28,6 +28,7 @@ import { createGraph, type Edge } from './world/graph.ts';
 import { loadIndex, type TileData } from './world/mapdata.ts';
 import { createMarker } from './world/markers.ts';
 import { createSignals } from './world/signals.ts';
+import { createTerrain } from './world/terrain.ts';
 import { createTileManager } from './world/tiles.ts';
 
 if (coarse) document.documentElement.classList.add('coarse');
@@ -45,10 +46,11 @@ const hud = createHud();
 // 간판·광고판 글씨를 캔버스에 그리니 한글 웹폰트를 먼저 기다린다
 await Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, 2500))]);
 const index = await loadIndex();
-const graph = createGraph(index);
+const terrain = createTerrain(index);
+const graph = createGraph(index, terrain);
 const signals = createSignals(scene, graph);
-const city = createCity(scene, index, stage.renderer);
-const farTiles = createFarTiles(scene);
+const city = createCity(scene, index, stage.renderer, terrain);
+const farTiles = createFarTiles(scene, index, terrain);
 const world = createCollisionWorld(graph);
 const minimap = createMinimap(document.getElementById('minimap') as HTMLCanvasElement, graph);
 const pedestrians = createPedestrians(scene, {
@@ -57,6 +59,7 @@ const pedestrians = createPedestrians(scene, {
     const e = graph.edge(edgeId);
     return e ? signals.walkState(n, e) : 'green';
   },
+  terrainAt: (x, z) => terrain.at(x, z),
 });
 // 타일이 들어오고 나갈 때 각 시스템에 알린다. traffic 은 아래에서 만들어지므로 늦게 묶는다.
 // onTileAdd 는 제너레이터라 타일 관리자가 프레임마다 조금씩 돌린다
@@ -65,8 +68,23 @@ let onTileRemove: (key: string) => void = () => {};
 const tiles = createTileManager(index, graph, {
   onAdd: (k, t) => onTileAdd(k, t),
   onRemove: (k) => onTileRemove(k),
-  onFar: (k, t) => farTiles.add(k, t),
-  onFarRemove: (k) => farTiles.remove(k),
+  onFar: (k, t) => {
+    terrain.add(k, t);
+    farTiles.add(k, t);
+  },
+  onFarRemove: (k) => {
+    farTiles.remove(k);
+    terrain.remove(k);
+  },
+  onDetail: (k) =>
+    (function* () {
+      const obs = yield* city.buildExtras(k);
+      if (obs) world.addExtras(`${k}#x`, obs);
+    })(),
+  onDetailRemove: (k) => {
+    world.removeTile(`${k}#x`);
+    city.removeExtras(k);
+  },
 });
 goBtn.textContent = '주변 거리를 만드는 중…';
 await tiles.warmup(index.start.x, index.start.z);
@@ -142,6 +160,8 @@ const spotMarkers = Array.from({ length: SPOTS }, () => createMarker(scene, COLO
 // 타일 ↔ 시스템 연결. 순서: 그래프(이미 들어감) → 신호 → 도시 → 충돌 → 미니맵 → 교통 → 보행자
 const tileScenes = new Map<string, TileScene>();
 onTileAdd = function* (key, tile) {
+  // 지형은 그래프(노면 높이)보다 먼저 알아야 한다
+  terrain.add(key, tile);
   const poles = signals.addTile(key, tile);
   yield 'signals';
   const ts = yield* city.buildTile(key, tile, graph, signals.has);
@@ -162,6 +182,7 @@ onTileRemove = (key) => {
   city.removeTile(key);
   tileScenes.delete(key);
   signals.removeTile(key);
+  terrain.remove(key);
 };
 // warmup 때 들어온 타일은 traffic 이 없어서 못 받았으니 지금 연결한다
 for (const key of tiles.loaded) {
@@ -278,7 +299,7 @@ function checkRedLight(): void {
 // debugCam 을 채우면 추적 카메라 대신 그 위치에서 본다 (항공 샷)
 const dbg = { debugCam: null as null | { x: number; y: number; z: number; lx: number; ly?: number; lz: number } };
 if (import.meta.env.DEV) {
-  (window as unknown as { __dc: unknown }).__dc = { player, traffic, battle, run, garage, save, graph, signals, wanted, missions, weather, index, tiles, dbg, scene, world, camera, daylight, chase, city, tileScenes, pedestrians, stage };
+  (window as unknown as { __dc: unknown }).__dc = { player, traffic, battle, run, garage, save, graph, signals, wanted, missions, weather, index, tiles, dbg, scene, world, camera, daylight, chase, city, tileScenes, pedestrians, stage, terrain };
 }
 
 // ----- 루프 -----
@@ -379,7 +400,7 @@ function frame(now: number): void {
     maxKmh: carStats.nitroVmax * 3.6,
     road: roadName,
     place: placeLabel,
-    status: started ? `${daylight.label} · ${weather.raining ? '비' : '맑음'} · 라디오 ${radio?.name ?? '꺼짐'} · 효과 ${stage.bloom ? '켬' : '끔'} · 타일 ${tiles.loaded.size}${tiles.loading ? ` (+${tiles.loading} 받는 중)` : ''}` : '',
+    status: started ? `${daylight.label} · ${weather.raining ? '비' : '맑음'} · 라디오 ${radio?.name ?? '꺼짐'} · 효과 ${stage.bloom ? '켬' : '끔'} · 타일 ${tiles.loaded.size}(상세 ${tiles.detailed.size})${tiles.loading ? ` (+${tiles.loading} 받는 중)` : ''}` : '',
   });
   hud.tick(dt);
   const extra: MapPoint[] = missions.spots.filter((sp) => sp.cool <= 0 && !missions.active).map((sp) => ({ x: sp.x, z: sp.z, color: hex(COLOR.mission), r: 3.5 }));

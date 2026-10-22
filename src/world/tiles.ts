@@ -11,7 +11,14 @@ export interface TileHandlers {
   /** 자세히 만들지 않은 바깥 고리(반경 +2 까지) 타일의 저해상도 모습을 보이고 치운다 */
   onFar?(key: string, tile: TileData): void;
   onFarRemove?(key: string): void;
+  /** 플레이어와 가까운(DETAIL_NEAR 안) 타일에 상세(주차 차량·간판)를 더한다. 제너레이터면 나눠 돌린다 */
+  onDetail?(key: string, tile: TileData): Generator<string, void> | void;
+  onDetailRemove?(key: string): void;
 }
+
+/** 타일 사각형까지의 거리가 이 안이면 상세를 올리고, 이보다 멀어지면 내린다 (이력 현상) */
+const DETAIL_NEAR = 350;
+const DETAIL_FAR = 650;
 
 /** 플레이어 주변 (2R+1)² 타일만 유지하며 받아오고 지운다. 그 바깥 두 고리는 데이터만 받아 저해상도로 보인다 */
 export interface TileManager {
@@ -19,6 +26,8 @@ export interface TileManager {
   readonly loading: number;
   /** 저해상도로 보이는 타일 수 */
   readonly farCount: number;
+  /** 상세(주차·간판)가 올라온 타일 */
+  readonly detailed: ReadonlySet<string>;
   /** 지금 여러 프레임에 걸쳐 만드는 중인 타일 */
   readonly building: string | null;
   /** 플레이어 위치 기준으로 필요한 타일을 맞춘다. 프레임당 budgetMs 만큼만 일한다 */
@@ -41,7 +50,17 @@ export function createTileManager(index: MapIndex, g: RoadGraph, handlers: TileH
   const far = new Set<string>();
   const data = new Map<string, TileData>();
   const pending = new Map<string, Promise<void>>();
-  let job: { key: string; it: Iterator<string, void>; step: number } | null = null;
+  let job: { key: string; it: Iterator<string, void>; step: number; detail?: boolean } | null = null;
+  const detailed = new Set<string>();
+  /** (x,z) 에서 타일 사각형까지의 거리 */
+  const rectDist = (key: string, x: number, z: number): number => {
+    const [i, j] = key.split('_').map(Number);
+    const x0 = index.bbox.minX + i * T;
+    const z0 = index.bbox.minZ + j * T;
+    const dx = Math.max(x0 - x, 0, x - (x0 + T));
+    const dz = Math.max(z0 - z, 0, z - (z0 + T));
+    return Math.hypot(dx, dz);
+  };
   const T = index.tile;
   const tileAt = (x: number, z: number): [number, number] => [Math.floor((x - index.bbox.minX) / T), Math.floor((z - index.bbox.minZ) / T)];
 
@@ -124,9 +143,10 @@ export function createTileManager(index: MapIndex, g: RoadGraph, handlers: TileH
       job.step++;
       if (done) {
         const key = job.key;
-        loaded.add(key);
+        if (job.detail) detailed.add(key);
+        else loaded.add(key);
         job = null;
-        hideFar(key);
+        if (!detailed.has(key)) hideFar(key);
         return;
       }
     } while (performance.now() - t0 < budgetMs);
@@ -135,6 +155,10 @@ export function createTileManager(index: MapIndex, g: RoadGraph, handlers: TileH
   function deactivate(key: string, stillFar: boolean): void {
     if (!loaded.has(key)) return;
     const t0 = performance.now();
+    if (detailed.has(key)) {
+      handlers.onDetailRemove?.(key);
+      detailed.delete(key);
+    }
     handlers.onRemove(key);
     g.removeTile(key);
     loaded.delete(key);
@@ -151,6 +175,7 @@ export function createTileManager(index: MapIndex, g: RoadGraph, handlers: TileH
     get farCount() {
       return far.size;
     },
+    detailed,
     get building() {
       return job?.key ?? null;
     },
@@ -205,6 +230,24 @@ export function createTileManager(index: MapIndex, g: RoadGraph, handlers: TileH
             return;
           }
         } else if (!pending.has(k) && pending.size < 2) void fetchTile(k);
+      }
+      // 상세 승격·강등: 가까운 타일에만 주차 차량·간판. 프레임당 하나
+      for (const k of detailed) {
+        if (loaded.has(k) && rectDist(k, x, z) <= DETAIL_FAR) continue;
+        handlers.onDetailRemove?.(k);
+        detailed.delete(k);
+        return;
+      }
+      for (const k of loaded) {
+        if (detailed.has(k) || rectDist(k, x, z) > DETAIL_NEAR) continue;
+        const tile = data.get(k);
+        if (!tile) continue;
+        const r = handlers.onDetail?.(k, tile);
+        if (r && typeof r.next === 'function') {
+          job = { key: k, it: r, step: 0, detail: true };
+          pump(budgetMs);
+        } else detailed.add(k);
+        return;
       }
     },
     async warmup(x, z) {
