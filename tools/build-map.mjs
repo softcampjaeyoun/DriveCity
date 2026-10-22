@@ -64,7 +64,11 @@ const num = (v) => {
 
 // ----- 도로 -----
 const CLASS_RANK = { motorway: 0, trunk: 1, primary: 2, secondary: 3, tertiary: 4, unclassified: 5, residential: 6, living_street: 7 };
-const DEFAULT_LANES = { motorway: 3, trunk: 3, primary: 3, secondary: 2, tertiary: 2, unclassified: 1, residential: 1, living_street: 1 };
+// lanes 태그가 없을 때 방향당 차선 수 (서울 기준: 주간선 왕복 6~8, 보조간선 왕복 6, 집산도로 왕복 4).
+// 상·하행이 따로 그려진 대로(oneway 조각)는 한 조각이 한 방향 전체라 더 넓게 본다
+const DEFAULT_LANES = { motorway: 3, trunk: 3, primary: 3, secondary: 3, tertiary: 2, unclassified: 1, residential: 1, living_street: 1 };
+const DUAL_DEFAULT_LANES = { motorway: 4, trunk: 4, primary: 4, secondary: 3, tertiary: 2 };
+const MAX_LANES = 5;
 const classOf = (hw) => hw.replace(/_link$/, '');
 const highwayWays = [...ways.values()].filter((w) => w.tags?.highway && CLASS_RANK[classOf(w.tags.highway)] !== undefined && w.nodes?.length >= 2);
 
@@ -101,7 +105,7 @@ for (const w of highwayWays) {
   const lbTag = num(t['lanes:backward']);
   let lf;
   let lb;
-  const def = link ? 1 : DEFAULT_LANES[cls];
+  const def = link ? 1 : (oneway && DUAL_DEFAULT_LANES[cls]) || DEFAULT_LANES[cls];
   if (oneway) {
     lf = Number.isFinite(total) ? total : def;
     lb = 0;
@@ -115,8 +119,8 @@ for (const w of highwayWays) {
     lf = def;
     lb = def;
   }
-  lf = Math.max(1, Math.min(4, Math.round(lf)));
-  lb = Math.max(0, Math.min(4, Math.round(lb)));
+  lf = Math.max(1, Math.min(MAX_LANES, Math.round(lf)));
+  lb = Math.max(0, Math.min(MAX_LANES, Math.round(lb)));
   const ids = reverse ? w.nodes.slice().reverse() : w.nodes;
   const bridge = t.bridge === 'yes' || t.bridge === 'viaduct';
   const tunnel = t.tunnel === 'yes';

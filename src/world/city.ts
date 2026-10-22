@@ -139,11 +139,11 @@ function ribbon(b: GeoBuilder, pts: number[], half: number, y: number, vTile = 8
  * 길 양쪽 인도: 차도 가장자리(inner)에서 outer 까지 연석 높이로 올라간 보도 윗면과, 차도 쪽을 향한 연석 수직면.
  * 윗면은 walkB 에, 연석면은 curbB 에 넣는다 (재질이 다르다)
  */
-function sidewalk(walkB: GeoBuilder, curbB: GeoBuilder, pts: number[], inner: number, outer: number, y: number): void {
+function sidewalk(walkB: GeoBuilder, curbB: GeoBuilder, pts: number[], inner: number, outer: number, y: number, sides: readonly number[] = [-1, 1]): void {
   const n = pts.length / 2;
   if (n < 2) return;
   const nrm = sideNormals(pts);
-  for (const side of [-1, 1]) {
+  for (const side of sides) {
     const top: number[] = [];
     const edge: number[] = [];
     const lowA: number[] = [];
@@ -488,8 +488,10 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
 
   // ----- 전체 공유: 바닥, 재질 -----
   // 바닥은 스텐실 1 인 곳(지하차도 트인 구간, maskMat 이 먼저 찍는다)을 비워 둔다
-  const groundMat = new THREE.MeshStandardMaterial({ map: loadTex('Concrete034_Color.jpg', true, spanX / 10, spanZ / 10), roughness: 0.95, color: 0x8d9097, stencilWrite: true, stencilFunc: THREE.NotEqualStencilFunc, stencilRef: 1 });
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(spanX, spanZ), groundMat);
+  // polygonOffset: 도로(2cm 위)·차선·언더글로우가 지면에 묻히지 않게 지면을 깊이에서 살짝 뒤로.
+  // 지면은 250m 격자로 잘게 나눈다 — 20km 짜리 삼각형 두 장이면 카메라 근처에서 깊이 보간 오차가 2cm 를 넘어 도로를 덮는다
+  const groundMat = new THREE.MeshStandardMaterial({ map: loadTex('Concrete034_Color.jpg', true, spanX / 10, spanZ / 10), roughness: 0.95, color: 0x8d9097, stencilWrite: true, stencilFunc: THREE.NotEqualStencilFunc, stencilRef: 1, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(spanX, spanZ, Math.ceil(spanX / 250), Math.ceil(spanZ / 250)), groundMat);
   ground.rotation.x = -Math.PI / 2;
   ground.position.set((minX + maxX) / 2, 0, (minZ + maxZ) / 2);
   ground.receiveShadow = true;
@@ -1055,7 +1057,20 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
       // 인도: 체인마다 연석(0.12m) 위 보도블록, 교차로에서는 물러난다
       for (const ch of chains) {
         const pts = slicePolyline(ch.pts, ch.ta, ch.len - ch.tb);
-        if (pts.length >= 4) sidewalk(sb, curbB, pts, ch.half + 0.3, ch.half + walkWidth(ch.rank), CURB_H);
+        if (pts.length < 4) continue;
+        // 상·하행이 따로 그려진 대로의 안쪽은 반대편 차로 위일 수 있다. 세 지점이 다른 길의 노면 안이면 그 쪽 인도는 뺀다
+        const W = walkWidth(ch.rank);
+        const cum = cumOf(pts);
+        const sides = [-1, 1].filter((side) => {
+          const off = offsetPolyline(pts, side * (ch.half + 0.3 + W * 0.5));
+          for (const t of [0.2, 0.5, 0.8]) {
+            const [px, pz] = ptAt(off.pts, cum, cum[cum.length - 1] * t);
+            const near = g.nearestEdge(px, pz, 16);
+            if (near && !ch.parts.some((p) => p.e.id === near.e.id) && near.d < near.e.half + 0.6) return false;
+          }
+          return true;
+        });
+        if (sides.length) sidewalk(sb, curbB, pts, ch.half + 0.3, ch.half + W, CURB_H, sides);
       }
       // 교차로 모서리: 이 타일이 가진 노드만. 이웃 타일이 아직 없어 길이 빠져 있을 수 있는 경계 노드는 미룬다
       {
