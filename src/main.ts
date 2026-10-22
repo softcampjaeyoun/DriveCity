@@ -213,7 +213,7 @@ input.on('fx', () => {
   save.settings.fx = !save.settings.fx;
   persist();
   stage.setBloom(save.settings.fx);
-  toast(save.settings.fx ? '화면 효과 켬' : '화면 효과 끔', '블룸(빛 번짐)', 1.2);
+  toast(save.settings.fx ? '화면 효과 켬' : '화면 효과 끔', '블룸(빛 번짐)·주변광 차폐', 1.2);
 });
 input.on('cancel', () => missions.cancel());
 input.on('weather', () => weather.toggle());
@@ -278,7 +278,7 @@ function checkRedLight(): void {
 // debugCam 을 채우면 추적 카메라 대신 그 위치에서 본다 (항공 샷)
 const dbg = { debugCam: null as null | { x: number; y: number; z: number; lx: number; ly?: number; lz: number } };
 if (import.meta.env.DEV) {
-  (window as unknown as { __dc: unknown }).__dc = { player, traffic, battle, run, garage, save, graph, signals, wanted, missions, weather, index, tiles, dbg, scene, world, camera, daylight, chase, city, tileScenes, pedestrians };
+  (window as unknown as { __dc: unknown }).__dc = { player, traffic, battle, run, garage, save, graph, signals, wanted, missions, weather, index, tiles, dbg, scene, world, camera, daylight, chase, city, tileScenes, pedestrians, stage };
 }
 
 // ----- 루프 -----
@@ -397,7 +397,7 @@ function frame(now: number): void {
     camera.fov = 55;
     camera.updateProjectionMatrix();
   }
-  stage.render();
+  stage.render(dt);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

@@ -97,14 +97,15 @@ export function createPedestrians(scene: THREE.Scene, sig: WalkSignals, density 
   const geo: Record<Part, THREE.BufferGeometry> = {
     head: new THREE.SphereGeometry(0.11, 10, 8),
     hair: new THREE.SphereGeometry(0.12, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.55).translate(0, 0.01, 0),
-    torso: new THREE.BoxGeometry(0.34, 0.5, 0.2).translate(0, -0.25, 0),
-    armL: new THREE.BoxGeometry(0.09, 0.56, 0.09).translate(0, -0.28, 0),
-    armR: new THREE.BoxGeometry(0.09, 0.56, 0.09).translate(0, -0.28, 0),
-    legL: new THREE.BoxGeometry(0.13, 0.78, 0.14).translate(0, -0.39, 0),
-    legR: new THREE.BoxGeometry(0.13, 0.78, 0.14).translate(0, -0.39, 0),
+    // 몸통·팔다리는 캡슐로 (상자보다 사람 실루엣에 가깝다). 원점은 붙는 지점(목·어깨·엉덩이)
+    torso: new THREE.CapsuleGeometry(0.15, 0.26, 3, 8).scale(1.15, 1, 0.68).translate(0, -0.25, 0),
+    armL: new THREE.CapsuleGeometry(0.045, 0.46, 2, 6).translate(0, -0.28, 0),
+    armR: new THREE.CapsuleGeometry(0.045, 0.46, 2, 6).translate(0, -0.28, 0),
+    legL: new THREE.CapsuleGeometry(0.068, 0.62, 2, 6).translate(0, -0.39, 0),
+    legR: new THREE.CapsuleGeometry(0.068, 0.62, 2, 6).translate(0, -0.39, 0),
     bag: new THREE.BoxGeometry(0.26, 0.3, 0.12).translate(0, -0.15, 0),
   };
-  const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 });
+  const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.82 });
   const tiles = new Map<string, TilePeds>();
   const dummy = new THREE.Object3D();
   const local = new THREE.Matrix4();

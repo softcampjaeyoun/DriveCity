@@ -87,8 +87,9 @@ export function createPlayer(scene: THREE.Scene, g: RoadGraph): Player {
   group.add(fallback);
   const body = new THREE.Group();
   fallback.add(body);
-  const paint = new THREE.MeshPhongMaterial({ color: 0xe8394a, shininess: 90, specular: 0x555555 });
-  const dark = new THREE.MeshPhongMaterial({ color: 0x0c0e14, shininess: 120, specular: 0x8899bb });
+  // 도장은 클리어코트(하늘·가로등이 비친다), 유리·스포일러는 매끈한 검정
+  const paint = new THREE.MeshPhysicalMaterial({ color: 0xe8394a, roughness: 0.3, metalness: 0.25, clearcoat: 1, clearcoatRoughness: 0.08 });
+  const dark = new THREE.MeshPhysicalMaterial({ color: 0x0c0e14, roughness: 0.12, metalness: 0.6 });
   const lower = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.55, 4.3), paint);
   lower.position.y = 0.68;
   lower.castShadow = true;

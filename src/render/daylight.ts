@@ -27,15 +27,15 @@ export function createDaylight(stage: Stage, onNight: (night: number) => void, s
   const { scene } = stage;
   const sun = new THREE.DirectionalLight(0xfff2dc, 0);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.mapSize.set(4096, 4096);
   sun.shadow.camera.left = -SHADOW_RANGE;
   sun.shadow.camera.right = SHADOW_RANGE;
   sun.shadow.camera.top = SHADOW_RANGE;
   sun.shadow.camera.bottom = -SHADOW_RANGE;
   sun.shadow.camera.near = 10;
   sun.shadow.camera.far = 900;
-  sun.shadow.bias = -0.0006;
-  sun.shadow.normalBias = 0.6;
+  sun.shadow.bias = -0.0004;
+  sun.shadow.normalBias = 0.5;
   scene.add(sun, sun.target);
   const fog = scene.fog as THREE.FogExp2;
   const bg = scene.background as THREE.Color;
@@ -44,10 +44,11 @@ export function createDaylight(stage: Stage, onNight: (night: number) => void, s
   let lastNight = -1;
   let px = 0;
   let pz = 0;
+  const sunDir = new THREE.Vector3();
 
-  // 구름: 높은 평면에 알파 노이즈를 천천히 흘린다
+  // 비구름: 높은 평면에 알파 노이즈를 천천히 흘린다 (맑은 날 구름은 하늘 셰이더가 그린다)
   const cloudTex = cloudTexture();
-  const cloudMat = new THREE.MeshBasicMaterial({ map: cloudTex, transparent: true, depthWrite: false, fog: false, opacity: 0.9 });
+  const cloudMat = new THREE.MeshBasicMaterial({ map: cloudTex, transparent: true, depthWrite: false, fog: false, opacity: 0 });
   const clouds = new THREE.Mesh(new THREE.PlaneGeometry(9000, 9000).rotateX(Math.PI / 2), cloudMat);
   clouds.position.y = 650;
   clouds.renderOrder = -1;
@@ -86,30 +87,35 @@ export function createDaylight(stage: Stage, onNight: (night: number) => void, s
       const dirZ = 0.45;
       sun.position.set(px + dirX * 400, dirY * 400, pz + dirZ * 400);
       sun.target.position.set(px, 0, pz);
-      sun.intensity = Math.max(0, elev) * (raining ? 0.45 : 1.6);
+      // ACES 톤매핑 기준 세기. 하늘빛 간접광은 환경맵이 대고, 반구광은 그 보조
+      sun.intensity = Math.max(0, elev) * (raining ? 0.6 : 2.2);
       sun.castShadow = elev > 0.05;
-      mix(sun.color, 0xffc98a, 0xfff6ea, clamp(elev / 0.4, 0, 1));
-      stage.hemi.intensity = lerp(raining ? 0.75 : 1.0, 0.75, night);
-      mix(stage.hemi.color, raining ? 0x8c9ab0 : 0xa8c4f0, 0x5a6cc8, night);
-      mix(stage.hemi.groundColor, 0x8a8070, 0x1a1208, night);
-      stage.moon.intensity = 0.4 * night;
+      mix(sun.color, 0xffc48a, 0xfff4e6, clamp(elev / 0.4, 0, 1));
+      stage.hemi.intensity = lerp(raining ? 0.5 : 0.32, 3.0, night);
+      mix(stage.hemi.color, raining ? 0x8c9ab0 : 0xbcc8dc, 0x6f80cf, night);
+      mix(stage.hemi.groundColor, 0x9c917c, 0x2c2419, night);
+      stage.moon.intensity = 1.6 * night;
+      sunDir.set(dirX, elev, dirZ).normalize();
+      stage.setSun(sunDir, raining);
+      stage.setNight(night);
 
       // 하늘·안개·구름
-      mix(top, raining ? 0x6a7890 : 0x3f7fd6, 0x05070f, night);
-      mix(horizon, raining ? 0x9aa6b6 : 0xcfdbea, 0x161528, night);
+      // 밤 하늘: 톤매핑·sRGB 를 거치므로 예전 상수보다 밝게 잡아야 비슷하게 보인다
+      mix(top, raining ? 0x6a7890 : 0x3f7fd6, 0x0c1024, night);
+      mix(horizon, raining ? 0x9aa6b6 : 0xbfcddf, 0x2b2650, night);
       horizon.lerp(new THREE.Color(0xf0a060), dusk * 0.55 * (raining ? 0.3 : 1));
       top.lerp(new THREE.Color(0x6c5a8a), dusk * 0.35);
       stage.setSky(top, horizon);
       fog.color.copy(horizon);
       bg.copy(horizon);
-      fog.density = lerp(0.0013, 0.0045, night) * (raining ? 2.2 : 1);
-      stage.setBloomStrength(lerp(0.12, 0.55, night));
-      stage.setExposure(lerp(1.0, 1.15, night));
+      fog.density = lerp(0.0011, 0.0034, night) * (raining ? 2.2 : 1);
+      stage.setBloomStrength(lerp(0.04, 0.45, night));
+      stage.setExposure(lerp(0.76, 1.9, night));
       clouds.position.set(px, 650, pz);
       cloudTex.offset.x += dt * 0.0015;
-      cloudMat.opacity = raining ? 1 : lerp(0.85, 0.08, night);
-      mix(cloudMat.color, raining ? 0x7d8795 : 0xffffff, 0x1a1a2a, night);
-      cloudMat.color.lerp(new THREE.Color(0xffb080), dusk * 0.5);
+      clouds.visible = raining;
+      cloudMat.opacity = raining ? 1 : 0;
+      mix(cloudMat.color, 0x6d7785, 0x1a1a2a, night);
 
       if (Math.abs(night - lastNight) > 0.01) {
         lastNight = night;

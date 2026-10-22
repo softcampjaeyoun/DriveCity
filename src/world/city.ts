@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { mulberry32 } from '../util/math.ts';
 import { aptTextures, arrowTexture, billboardTexture, busLaneTexture, dongTexture, facadeSet, loadMerged, loadTex, shopNameAtlas, signTexture, storefrontTextures, streetSignTexture, subwaySignTexture, SUB_KO, type ArrowKind, type MergedModel } from '../render/assets.ts';
+import { withGrime } from '../render/materials.ts';
+import { buildTreeSet, hedgeTexture } from '../render/trees.ts';
 import { glowTexture, windowTexture } from '../render/textures.ts';
 import { isFlat, type Edge, type Node, type RoadGraph } from './graph.ts';
 import type { BuildingData, MapIndex, TileData } from './mapdata.ts';
@@ -65,10 +67,18 @@ class GeoBuilder {
   nrm: number[] = [];
   uv: number[] = [];
   idx: number[] = [];
+  col: number[] = [];
+  /** useColor 일 때 이후 꼭짓점에 찍히는 색 (건물마다 바꿔 같은 질감이라도 톤이 다르게) */
+  tint: [number, number, number] = [1, 1, 1];
+  readonly useColor: boolean;
+  constructor(useColor = false) {
+    this.useColor = useColor;
+  }
   vertex(x: number, y: number, z: number, nx: number, ny: number, nz: number, u = 0, v = 0): number {
     this.pos.push(x, y, z);
     this.nrm.push(nx, ny, nz);
     this.uv.push(u, v);
+    if (this.useColor) this.col.push(this.tint[0], this.tint[1], this.tint[2]);
     return this.pos.length / 3 - 1;
   }
   quad(a: number, b: number, c: number, d: number): void {
@@ -79,6 +89,7 @@ class GeoBuilder {
     geo.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
     geo.setAttribute('normal', new THREE.Float32BufferAttribute(this.nrm, 3));
     geo.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
+    if (this.useColor) geo.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
     geo.setIndex(this.idx);
     return geo;
   }
@@ -249,7 +260,7 @@ function offsetPolyline(pts: number[], off: number): { pts: number[]; nrm: numbe
 }
 
 /** 폴리라인을 따라 폭 2*half, 바닥 y0 윗면 y1 인 네모 띠(윗면·양 옆면·양 끝막이). 띠녹지 울타리에 쓴다 */
-function extrudeStrip(b: GeoBuilder, pts: number[], half: number, y0: number, y1: number): void {
+function extrudeStrip(b: GeoBuilder, pts: number[], half: number, y0: number, y1: number, uvWorld = false): void {
   const n = pts.length / 2;
   if (n < 2) return;
   const nrm = sideNormals(pts);
@@ -257,6 +268,8 @@ function extrudeStrip(b: GeoBuilder, pts: number[], half: number, y0: number, y1
   const rt: number[] = [];
   const lb: number[] = [];
   const rb: number[] = [];
+  const ltS: number[] = [];
+  const rtS: number[] = [];
   let cum = 0;
   for (let i = 0; i < n; i++) {
     const px = pts[i * 2];
@@ -265,20 +278,36 @@ function extrudeStrip(b: GeoBuilder, pts: number[], half: number, y0: number, y1
     const nx = nrm[i * 2];
     const nz = nrm[i * 2 + 1];
     const v = cum / 2;
-    lt.push(b.vertex(px - nx * half, y1, pz - nz * half, 0, 1, 0, 0, v));
-    rt.push(b.vertex(px + nx * half, y1, pz + nz * half, 0, 1, 0, 1, v));
-    lb.push(b.vertex(px - nx * half, y0, pz - nz * half, -nx, 0, -nz, 0, v));
-    rb.push(b.vertex(px + nx * half, y0, pz + nz * half, nx, 0, nz, 1, v));
+    const lx = px - nx * half;
+    const lz = pz - nz * half;
+    const rx = px + nx * half;
+    const rz = pz + nz * half;
+    if (uvWorld) {
+      // 윗면은 월드 xz(2m 한 장), 옆면은 길이·높이 기준. 옆면은 꼭짓점을 따로 둬 uv 가 섞이지 않게
+      lt.push(b.vertex(lx, y1, lz, 0, 1, 0, lx / 2, lz / 2));
+      rt.push(b.vertex(rx, y1, rz, 0, 1, 0, rx / 2, rz / 2));
+      ltS.push(b.vertex(lx, y1, lz, -nx, 0, -nz, v, y1 / 2));
+      rtS.push(b.vertex(rx, y1, rz, nx, 0, nz, v, y1 / 2));
+      lb.push(b.vertex(lx, y0, lz, -nx, 0, -nz, v, y0 / 2));
+      rb.push(b.vertex(rx, y0, rz, nx, 0, nz, v, y0 / 2));
+    } else {
+      lt.push(b.vertex(lx, y1, lz, 0, 1, 0, 0, v));
+      rt.push(b.vertex(rx, y1, rz, 0, 1, 0, 1, v));
+      lb.push(b.vertex(lx, y0, lz, -nx, 0, -nz, 0, v));
+      rb.push(b.vertex(rx, y0, rz, nx, 0, nz, 1, v));
+    }
   }
+  const lts = uvWorld ? ltS : lt;
+  const rts = uvWorld ? rtS : rt;
   for (let i = 0; i < n - 1; i++) {
     b.quad(lt[i], rt[i], rt[i + 1], lt[i + 1]);
-    b.quad(lb[i], lt[i], lt[i + 1], lb[i + 1]);
-    b.quad(rt[i], rb[i], rb[i + 1], rt[i + 1]);
+    b.quad(lb[i], lts[i], lts[i + 1], lb[i + 1]);
+    b.quad(rts[i], rb[i], rb[i + 1], rts[i + 1]);
   }
   // 끝막이
-  b.quad(lb[0], rb[0], rt[0], lt[0]);
+  b.quad(lb[0], rb[0], rts[0], lts[0]);
   const e = n - 1;
-  b.quad(rb[e], lb[e], lt[e], rt[e]);
+  b.quad(rb[e], lb[e], lts[e], rts[e]);
 }
 
 /** 세워 둔 사각 간판 하나를 b 에 넣는다 (yaw 방향 +Z 를 바라봄, 아틀라스 uv) */
@@ -447,6 +476,48 @@ function distToPolyline(pts: number[], x: number, z: number): number {
 }
 
 /** 바깥 고리와 안쪽 고리 사이의 평면 띠 (경기장 지붕 링). 두 고리는 같은 꼭짓점 수여야 한다 */
+/** 고리를 안쪽으로 d 만큼 민 고리 (파라펫 윗면 띠용). 꺾임이 심한 꼭짓점은 마이터를 3d 로 제한 */
+function insetRing(ring: number[], d: number): number[] | null {
+  const n = ring.length / 2;
+  if (n < 3) return null;
+  let area = 0;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    area += ring[i * 2] * ring[j * 2 + 1] - ring[j * 2] * ring[i * 2 + 1];
+  }
+  // 넓이가 양수(반시계)면 안쪽은 변의 왼쪽
+  const sgn = area > 0 ? 1 : -1;
+  const edgeN = (i: number): [number, number] | null => {
+    const j = (i + 1) % n;
+    const dx = ring[j * 2] - ring[i * 2];
+    const dz = ring[j * 2 + 1] - ring[i * 2 + 1];
+    const len = Math.hypot(dx, dz);
+    if (len < 0.01) return null;
+    return [(-dz / len) * sgn, (dx / len) * sgn];
+  };
+  const out: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = edgeN((i - 1 + n) % n);
+    const b = edgeN(i);
+    const na = a ?? b;
+    const nb = b ?? a;
+    if (!na || !nb) return null;
+    let mx = na[0] + nb[0];
+    let mz = na[1] + nb[1];
+    const ml = Math.hypot(mx, mz);
+    if (ml < 1e-4) {
+      mx = na[0];
+      mz = na[1];
+    } else {
+      mx /= ml;
+      mz /= ml;
+    }
+    const cosHalf = Math.max(1 / 3, mx * na[0] + mz * na[1]);
+    out.push(ring[i * 2] + (mx * d) / cosHalf, ring[i * 2 + 1] + (mz * d) / cosHalf);
+  }
+  return out;
+}
+
 function ringBand(b: GeoBuilder, outer: number[], inner: number[], y: number, uvScale = 6): void {
   const n = outer.length / 2;
   const o: number[] = [];
@@ -528,7 +599,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
   // 바닥은 스텐실 1 인 곳(지하차도 트인 구간, maskMat 이 먼저 찍는다)을 비워 둔다
   // polygonOffset: 도로(2cm 위)·차선·언더글로우가 지면에 묻히지 않게 지면을 깊이에서 살짝 뒤로.
   // 지면은 250m 격자로 잘게 나눈다 — 20km 짜리 삼각형 두 장이면 카메라 근처에서 깊이 보간 오차가 2cm 를 넘어 도로를 덮는다
-  const groundMat = new THREE.MeshStandardMaterial({ map: loadTex('Concrete034_Color.jpg', true, spanX / 10, spanZ / 10), roughness: 0.95, color: 0x8d9097, stencilWrite: true, stencilFunc: THREE.NotEqualStencilFunc, stencilRef: 1, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+  const groundMat = withGrime(new THREE.MeshStandardMaterial({ map: loadTex('Concrete034_Color.jpg', true, spanX / 10, spanZ / 10), roughness: 0.95, color: 0x85878b, stencilWrite: true, stencilFunc: THREE.NotEqualStencilFunc, stencilRef: 1, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }), { scale: 90, strength: 0.4, detail: 11 });
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(spanX, spanZ, Math.ceil(spanX / 250), Math.ceil(spanZ / 250)), groundMat);
   ground.rotation.x = -Math.PI / 2;
   ground.position.set((minX + maxX) / 2, 0, (minZ + maxZ) / 2);
@@ -555,14 +626,18 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
     return t;
   })();
   const waterMat = new THREE.MeshPhongMaterial({ color: 0x1a3a66, emissive: 0x0f2a52, shininess: 90, specular: 0x8aa8d8, bumpMap: ripple, bumpScale: 0.6, side: THREE.DoubleSide });
-  const parkMat = new THREE.MeshLambertMaterial({ color: 0x15261c, side: THREE.DoubleSide });
+  // 잔디: 공원 바닥, 중앙분리대, 경기장 필드. 사진 질감 + 월드 얼룩으로 단색 느낌을 없앤다
+  const grassSet = () => ({ map: loadTex('Grass004_Color.jpg', true, 1, 1), normalMap: loadTex('Grass004_NormalGL.jpg', false, 1, 1), roughnessMap: loadTex('Grass004_Roughness.jpg', false, 1, 1), roughness: 1, metalness: 0 });
+  const parkMat = withGrime(new THREE.MeshStandardMaterial({ ...grassSet(), color: 0x8f9a7e, side: THREE.DoubleSide }), { scale: 50, strength: 0.4, detail: 6 });
+  const grassMat = withGrime(new THREE.MeshStandardMaterial({ ...grassSet(), color: 0x9aa684 }), { scale: 30, strength: 0.35, detail: 5 });
+  const fieldMat = withGrime(new THREE.MeshStandardMaterial({ ...grassSet(), color: 0xa6bb8e }), { scale: 20, strength: 0.15, detail: 0 });
   const railMat = new THREE.MeshLambertMaterial({ color: 0x23262e, side: THREE.DoubleSide });
-  const roadMat = new THREE.MeshStandardMaterial({ map: loadTex('Asphalt033_Color.jpg', true, 1, 1), normalMap: loadTex('Asphalt033_NormalGL.jpg', false, 1, 1), roughness: 0.9, color: 0x9a9ca3 });
+  const roadMat = withGrime(new THREE.MeshStandardMaterial({ map: loadTex('Asphalt033_Color.jpg', true, 1, 1), normalMap: loadTex('Asphalt033_NormalGL.jpg', false, 1, 1), roughnessMap: loadTex('Asphalt033_Roughness.jpg', false, 1, 1), roughness: 1, color: 0x8e9095 }), { scale: 45, strength: 0.38, detail: 6 });
   // 인도 보도블록 uv 는 m 단위(2m 마다 한 장). 연석은 화강석, 띠녹지는 회양목 울타리
   // 인도·연석도 스텐실 1(지하철 출입구 계단 구멍)인 곳은 비운다
-  const walkMat = new THREE.MeshStandardMaterial({ map: loadTex('PavingStones151_Color.jpg', true, 1, 1), normalMap: loadTex('PavingStones151_NormalGL.jpg', false, 1, 1), roughness: 0.9, color: 0xc4c6ca, stencilWrite: true, stencilFunc: THREE.NotEqualStencilFunc, stencilRef: 1 });
-  const curbMat = new THREE.MeshStandardMaterial({ color: 0xb4b6b3, roughness: 0.8, side: THREE.DoubleSide, stencilWrite: true, stencilFunc: THREE.NotEqualStencilFunc, stencilRef: 1 });
-  const hedgeMat = new THREE.MeshLambertMaterial({ color: 0x2f5c31 });
+  const walkMat = withGrime(new THREE.MeshStandardMaterial({ map: loadTex('PavingStones136_Color.jpg', true, 2.5, 2.5), normalMap: loadTex('PavingStones136_NormalGL.jpg', false, 2.5, 2.5), roughnessMap: loadTex('PavingStones136_Roughness.jpg', false, 2.5, 2.5), roughness: 1, color: 0x9f9e98, stencilWrite: true, stencilFunc: THREE.NotEqualStencilFunc, stencilRef: 1 }), { scale: 28, strength: 0.32, detail: 4.5 });
+  const curbMat = withGrime(new THREE.MeshStandardMaterial({ map: loadTex('Concrete034_Color.jpg', true, 1, 1), color: 0xa9aaa6, roughness: 0.85, side: THREE.DoubleSide, stencilWrite: true, stencilFunc: THREE.NotEqualStencilFunc, stencilRef: 1 }), { scale: 25, strength: 0.35, detail: 3 });
+  const hedgeMat = new THREE.MeshStandardMaterial({ map: hedgeTexture(), roughness: 0.92, color: 0xb0b8a2 });
   const grateMat = new THREE.MeshStandardMaterial({ color: 0x2c2e33, roughness: 0.6, metalness: 0.5 });
   const bollardMat = new THREE.MeshStandardMaterial({ color: 0xcfd3d8, roughness: 0.35, metalness: 0.7 });
   const lensMat = new THREE.MeshBasicMaterial({ color: 0xffd9a0 });
@@ -570,9 +645,11 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
   const deckMat = new THREE.MeshStandardMaterial({ map: loadTex('Concrete034_Color.jpg', true, 1, 1), roughness: 0.95, color: 0x9a9ca2, side: THREE.DoubleSide });
   const tunnelMat = new THREE.MeshStandardMaterial({ color: 0x61646c, roughness: 0.95, side: THREE.DoubleSide });
   const bridgeRailMat = new THREE.MeshLambertMaterial({ color: 0x8b93a3 });
-  const yellowMat = new THREE.MeshLambertMaterial({ color: 0xd9b24a });
-  const whiteMat = new THREE.MeshLambertMaterial({ color: 0xe8ebf2 });
-  const barMat = new THREE.MeshLambertMaterial({ color: 0xf0f2f6 });
+  // 차선 페인트: 얼룩을 세게 줘 군데군데 닳은 느낌
+  const paintGrime = { scale: 18, strength: 0.55, detail: 2.5 };
+  const yellowMat = withGrime(new THREE.MeshStandardMaterial({ color: 0xc9a63d, roughness: 0.75 }), paintGrime);
+  const whiteMat = withGrime(new THREE.MeshStandardMaterial({ color: 0xd6d8d4, roughness: 0.75 }), paintGrime);
+  const barMat = withGrime(new THREE.MeshStandardMaterial({ color: 0xdfe1dd, roughness: 0.75 }), paintGrime);
   const poleMat = new THREE.MeshLambertMaterial({ color: 0x4a4f5a });
   const poolMat = new THREE.MeshBasicMaterial({ map: glowTexture('rgba(255,170,80,0.42)'), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
   const haloMat = new THREE.PointsMaterial({ size: 7, map: glowTexture('rgba(255,190,110,1)'), color: 0xffb35c, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
@@ -585,14 +662,13 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
   const shelterSignMat = new THREE.MeshBasicMaterial({ color: 0x1f6fd1 });
   const manholeMat = new THREE.MeshStandardMaterial({ color: 0x3a3d44, roughness: 0.6, metalness: 0.5 });
   const arrowKinds: ArrowKind[] = ['straight', 'left', 'right', 'straightRight', 'straightLeft', 'leftRight'];
-  const arrowMats = Object.fromEntries(arrowKinds.map((k) => [k, new THREE.MeshBasicMaterial({ map: arrowTexture(k), transparent: true, depthWrite: false })])) as Record<ArrowKind, THREE.MeshBasicMaterial>;
+  const arrowMats = Object.fromEntries(arrowKinds.map((k) => [k, withGrime(new THREE.MeshBasicMaterial({ map: arrowTexture(k), transparent: true, depthWrite: false, color: 0xd9dbd8 }), paintGrime)])) as Record<ArrowKind, THREE.MeshBasicMaterial>;
   // 버스전용차로 도색(파랑)과 글씨
-  const busLaneMat = new THREE.MeshBasicMaterial({ color: 0x2b66c9, transparent: true, opacity: 0.55, depthWrite: false });
-  const busTextMat = new THREE.MeshBasicMaterial({ map: busLaneTexture(), transparent: true, depthWrite: false });
+  const busLaneMat = withGrime(new THREE.MeshBasicMaterial({ color: 0x3a62a3, transparent: true, opacity: 0.42, depthWrite: false }), { scale: 22, strength: 0.6, detail: 3.5 });
+  const busTextMat = withGrime(new THREE.MeshBasicMaterial({ map: busLaneTexture(), transparent: true, depthWrite: false, color: 0xd9dbd8 }), paintGrime);
   // 거리 소품: 쓰레기통, 변압기함. 경기장 필드, 돔, 첨탑
   const trashMat = new THREE.MeshStandardMaterial({ color: 0x2f5a3a, roughness: 0.7 });
   const utilityBoxMat = new THREE.MeshStandardMaterial({ color: 0x7c8a80, roughness: 0.6, metalness: 0.2 });
-  const fieldMat = new THREE.MeshLambertMaterial({ color: 0x3f8a3f });
   const standMat = new THREE.MeshLambertMaterial({ color: 0x9aa0a8, side: THREE.DoubleSide });
   const domeMat = new THREE.MeshStandardMaterial({ color: 0xd9dde3, roughness: 0.5, metalness: 0.2 });
   const spireMat = new THREE.MeshStandardMaterial({ color: 0x3b4f7a, roughness: 0.6 });
@@ -629,30 +705,43 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
     t.colorSpace = THREE.SRGBColorSpace;
     return t;
   };
-  const stdWall = (set: ReturnType<typeof facadeSet>, seed: number, roughness = 0.75) =>
-    new THREE.MeshStandardMaterial({ map: set.map, normalMap: set.normalMap, emissive: 0xffffff, emissiveMap: set.emissiveMap ?? windows(seed), emissiveIntensity: 0, roughness, metalness: 0 });
-  const glass1 = stdWall(facadeSet('Facade001', 16, 16, false), 11, 0.35);
-  const glass2 = stdWall(facadeSet('Facade005', 12, 12, false), 12, 0.35);
+  const wallGrime = { scale: 35, strength: 0.14, detail: 0, baseHeight: 4.5, baseStrength: 0.32 };
+  const stdWall = (set: ReturnType<typeof facadeSet>, seed: number, roughness = 0.75, metalness = 0) =>
+    withGrime(new THREE.MeshStandardMaterial({ map: set.map, normalMap: set.normalMap, normalScale: new THREE.Vector2(1.4, 1.4), emissive: 0xffffff, emissiveMap: set.emissiveMap ?? windows(seed), emissiveIntensity: 0, roughness, metalness, vertexColors: true }), wallGrime);
+  const glass1 = stdWall(facadeSet('Facade001', 16, 16, false), 11, 0.28, 0.25);
+  const glass2 = stdWall(facadeSet('Facade005', 12, 12, false), 12, 0.3, 0.2);
   const office = stdWall(facadeSet('Facade006', 14, 16, false), 13, 0.6);
   const brick1 = stdWall(facadeSet('Facade018A', 12, 14, true), 14);
   const brick2 = stdWall(facadeSet('Facade019A', 12, 14, true), 15);
   const brick3 = stdWall(facadeSet('Facade020A', 12, 14, true), 16);
-  const nightOffice = stdWall(facadeSet('Facade013', 16, 18, true), 17, 0.5);
+  const nightOffice = stdWall(facadeSet('Facade013', 16, 18, true), 17, 0.45, 0.1);
   const aptWalls = [1, 2, 3].map((s) => {
     const t = aptTextures(s);
     t.map.repeat.set(1, 1);
     t.emissive.repeat.set(1, 1);
-    return new THREE.MeshStandardMaterial({ map: t.map, emissive: 0xffffff, emissiveMap: t.emissive, emissiveIntensity: 0, roughness: 0.85 });
+    return withGrime(new THREE.MeshStandardMaterial({ map: t.map, emissive: 0xffffff, emissiveMap: t.emissive, emissiveIntensity: 0, roughness: 0.85, vertexColors: true }), wallGrime);
   });
   const storeWalls = [1, 2, 3, 4].map((s) => {
     const t = storefrontTextures(s);
-    return new THREE.MeshStandardMaterial({ map: t.map, emissive: 0xffffff, emissiveMap: t.emissive, emissiveIntensity: 0, roughness: 0.5 });
+    return withGrime(new THREE.MeshStandardMaterial({ map: t.map, emissive: 0xffffff, emissiveMap: t.emissive, emissiveIntensity: 0, roughness: 0.38, metalness: 0.08, vertexColors: true }), { scale: 20, strength: 0.1, detail: 0, baseHeight: 1.2, baseStrength: 0.3 });
   });
   const towerSet = [glass1, glass2, office, nightOffice];
   const blockSet = [office, brick1, brick2, brick3];
   const lowSet = [brick1, brick2, brick3, office];
   const allWalls = [glass1, glass2, office, brick1, brick2, brick3, nightOffice, ...aptWalls, ...storeWalls];
-  const roofMat = new THREE.MeshStandardMaterial({ map: loadTex('Concrete034_Color.jpg', true, 3.3, 3.3), roughness: 0.95, color: 0x8f9298, side: THREE.DoubleSide });
+  const roofMat = withGrime(new THREE.MeshStandardMaterial({ map: loadTex('Concrete034_Color.jpg', true, 3.3, 3.3), roughness: 0.95, color: 0x87898d, side: THREE.DoubleSide }), { scale: 18, strength: 0.4, detail: 4 });
+  // 옥상 가장자리 파라펫(낮은 난간벽)과 상가 차양
+  const parapetMat = withGrime(new THREE.MeshStandardMaterial({ map: loadTex('Concrete034_Color.jpg', true, 1, 1), roughness: 0.9, color: 0x9a9b9e, side: THREE.DoubleSide }), { scale: 12, strength: 0.35, detail: 2 });
+  const awningMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, side: THREE.DoubleSide });
+  const AWNING_COLORS = [0x8c1d1d, 0x1f3a6b, 0x2f5a3a, 0xb8872c, 0x3a3a3a, 0x9b2d4a, 0xe8e2d4, 0x1d4e8c];
+  /** 건물 종류별 외벽 틴트 후보 (같은 질감 텍스처라도 동마다 톤이 다르게) */
+  const TINTS: Record<string, Array<[number, number, number]>> = {
+    tower: [[1, 1, 1], [0.86, 0.9, 0.96], [0.9, 0.95, 0.92], [0.97, 0.95, 0.9], [0.78, 0.8, 0.84], [0.68, 0.72, 0.78]],
+    block: [[1, 1, 1], [0.95, 0.92, 0.86], [0.86, 0.88, 0.9], [0.9, 0.86, 0.8], [0.8, 0.8, 0.8], [1, 0.97, 0.92], [0.74, 0.72, 0.7]],
+    low: [[1, 1, 1], [0.95, 0.92, 0.86], [0.88, 0.88, 0.88], [0.9, 0.86, 0.8], [0.78, 0.76, 0.74], [1, 0.97, 0.92], [0.7, 0.68, 0.66]],
+    apt: [[1, 1, 1], [1, 0.98, 0.93], [0.92, 0.93, 0.95], [0.93, 0.99, 0.94], [0.92, 0.95, 1], [0.97, 0.94, 0.9]],
+  };
+  const tempColor = new THREE.Color();
   const SIGN_VARIANTS = 12;
   const signMats = Array.from({ length: SIGN_VARIANTS }, (_, v) => new THREE.MeshBasicMaterial({ map: signTexture(v + 1), side: THREE.DoubleSide }));
   const BILL_VARIANTS = 5;
@@ -664,6 +753,8 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
   const plane = new THREE.PlaneGeometry(1, 1);
   const unitBox = new THREE.BoxGeometry(1, 1, 1);
   const beaconGeo = new THREE.BoxGeometry(0.8, 0.8, 0.8);
+  // 차양: 벽(z=0)에서 바깥(+z)으로 1m 뻗으며 끝이 처진다. 인스턴스 scale 로 폭·깊이를 맞춘다
+  const awningGeo = new THREE.BoxGeometry(1, 0.05, 1).translate(0, 0, 0.5).rotateX(0.32);
   const railGeo = new THREE.BoxGeometry(0.25, 1.0, 3);
   // 가로등: 8m 기둥 + 차도 쪽(+Z)으로 뻗은 팔 + 등갓. 등갓 아래 렌즈는 따로 밤에 밝힌다
   const lampGeo = mergeGeometries([
@@ -682,23 +773,8 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
   const manholeGeo = new THREE.CircleGeometry(0.4, 12).rotateX(-Math.PI / 2);
   const discGeo = new THREE.CircleGeometry(1, 20).rotateX(-Math.PI / 2);
 
-  // ----- 나무 모델 (한 번만 로드) -----
-  let treeModels: MergedModel[] | null = null;
-  const treeWaiters: Array<() => void> = [];
-  void (async () => {
-    const base = `${import.meta.env.BASE_URL}models/kenney-nature/`;
-    const r = mulberry32(5);
-    const recolor = (m: THREE.MeshStandardMaterial) => {
-      if (/leaf|grass/i.test(m.name)) m.color.setHex([0x4f8f3f, 0x3f7a35, 0x5c9a44][Math.floor(r() * 3)]);
-      else if (/bark|wood/i.test(m.name)) m.color.setHex(0x5a4330);
-      m.roughness = 0.9;
-    };
-    const kinds = await Promise.all(['tree_default', 'tree_oak', 'tree_tall', 'tree_simple', 'tree_fat'].map((n) => loadMerged(`${base}${n}.glb`, recolor)));
-    treeModels = kinds.filter((k): k is MergedModel => !!k);
-    for (const m of treeModels) m.geometry.computeBoundingBox();
-    for (const w of treeWaiters) w();
-    treeWaiters.length = 0;
-  })();
+  // ----- 나무 모델 (절차 생성, 한 번만) -----
+  const treeSet = buildTreeSet();
 
   // ----- 길가 주차 차량 모델 (Kenney 승용차 몇 종, 한 번만 로드) -----
   let carModels: Array<{ m: MergedModel; scale: number; yOff: number }> | null = null;
@@ -713,7 +789,11 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
       ['sedan-sports', 4.3],
     ];
     const loaded = await Promise.all(defs.map(async ([name, len]) => {
-      const m = await loadMerged(`${base}${name}.glb`);
+      const m = await loadMerged(`${base}${name}.glb`, (mat) => {
+        mat.roughness = 0.42;
+        mat.metalness = 0.2;
+        mat.envMapIntensity = 1.1;
+      });
       if (!m) return null;
       m.geometry.computeBoundingBox();
       const bb = m.geometry.boundingBox!;
@@ -785,7 +865,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
       for (const ring of tile.water) flatPolygon(wb, ring, 0.04);
       if (!wb.empty) addMesh(wb.build(), waterMat).name = 'water';
       const pb = new GeoBuilder();
-      for (const ring of tile.parks) flatPolygon(pb, ring, 0.03);
+      for (const ring of tile.parks) flatPolygon(pb, ring, 0.03, 2.5);
       if (!pb.empty) addMesh(pb.build(), parkMat);
       const rb = new GeoBuilder();
       for (const pts of tile.rails) ribbon(rb, pts, 2.4, 0.012);
@@ -1178,8 +1258,8 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
             if (centreOff.pts.length >= 4) {
               extrudeStrip(medianB, centreOff.pts, mw / 2, 0, 0.18);
               if (mw >= 1.4) {
-                extrudeStrip(medianGrassB, centreOff.pts, mw / 2 - 0.25, 0.18, 0.21);
-                extrudeStrip(medianHedgeB, centreOff.pts, Math.min(0.6, mw / 2 - 0.4), 0.2, 0.8);
+                extrudeStrip(medianGrassB, centreOff.pts, mw / 2 - 0.25, 0.18, 0.21, true);
+                extrudeStrip(medianHedgeB, centreOff.pts, Math.min(0.6, mw / 2 - 0.4), 0.2, 0.8, true);
               }
               count('median');
             }
@@ -1189,7 +1269,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
         if (sides.length) sidewalk(sb, curbB, pts, ch.half + 0.3, ch.half + W, CURB_H, sides);
       }
       if (!medianB.empty) addMesh(medianB.build(), curbMat);
-      if (!medianGrassB.empty) addMesh(medianGrassB.build(), fieldMat);
+      if (!medianGrassB.empty) addMesh(medianGrassB.build(), grassMat);
       if (!medianHedgeB.empty) addMesh(medianHedgeB.build(), hedgeMat, true);
       // 교차로 모서리: 이 타일이 가진 노드만. 이웃 타일이 아직 없어 길이 빠져 있을 수 있는 경계 노드는 미룬다
       {
@@ -1475,11 +1555,20 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
     const builderFor = (m: THREE.Material) => {
       let b = wallBuilders.get(m);
       if (!b) {
-        b = new GeoBuilder();
+        b = new GeoBuilder(true);
         wallBuilders.set(m, b);
       }
       return b;
     };
+    /** 건물 종류에 맞는 틴트 하나 (밝기도 ±10% 흔든다) */
+    const tintFor = (kind: string): [number, number, number] => {
+      const list = TINTS[kind] ?? TINTS.block;
+      const t = list[Math.floor(rand() * list.length)];
+      const k = 0.88 + rand() * 0.2;
+      return [t[0] * k, t[1] * k, t[2] * k];
+    };
+    const parapetB = new GeoBuilder();
+    const awnings: Array<Placement & { c: number }> = [];
     const roofB = new GeoBuilder();
     const fieldB = new GeoBuilder();
     const standB = new GeoBuilder();
@@ -1551,6 +1640,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
       };
       // ----- 랜드마크 전용 모델 (이름으로 알아본다) -----
       // 경기장(잠실주경기장·야구장): 바깥 스탠드 벽 + 안쪽으로 기운 지붕 링 + 푸른 필드
+      for (const b of wallBuilders.values()) b.tint = [1, 1, 1];
       if (/주경기장|야구장/.test(bd.name) && n >= 60) {
         const H = /야구장/.test(bd.name) ? 22 : 30;
         const inner = scaled(0.62);
@@ -1560,7 +1650,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
         ringBand(roofB, mid, inner, H);
         // 스탠드 안쪽 경사면 (지붕 안쪽 가장자리에서 필드로). 안쪽을 보니 양면 재질
         wallBetween(standB, inner, H, scaled(0.5), 2.5);
-        flatPolygon(fieldB, scaled(0.5), 0.3, 10);
+        flatPolygon(fieldB, scaled(0.5), 0.3, 2.5);
         beacons.push({ x: ccx, y: H + 0.6, z: ccz, yaw: 0, w: 1, h: 1 });
         return;
       }
@@ -1630,6 +1720,10 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
         return;
       }
       const wb = builderFor(wall);
+      wb.tint = tintFor(bd.kind);
+      const sb = builderFor(store);
+      const sk = 0.9 + rand() * 0.15;
+      sb.tint = [sk, sk, sk];
       for (let i = 0; i < n; i++) {
         const j = (i + 1) % n;
         const x0 = ring[i * 2];
@@ -1651,13 +1745,19 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
         const u1 = (cum + len) / uScale + ou;
         const hasStore = commercial && streetFace && bd.h > STORE_H + 1.5;
         if (hasStore) {
-          wallQuad(builderFor(store), x0, z0, x1, z1, 0, STORE_H, nx, nz, cum / 12, (cum + len) / 12, 0, 1);
+          wallQuad(sb, x0, z0, x1, z1, 0, STORE_H, nx, nz, cum / 12, (cum + len) / 12, 0, 1);
           wallQuad(wb, x0, z0, x1, z1, STORE_H, bd.h, nx, nz, u0, u1, STORE_H / vScale + ov, bd.h / vScale + ov);
         } else wallQuad(wb, x0, z0, x1, z1, 0, bd.h, nx, nz, u0, u1, ov, bd.h / vScale + ov);
         cum += len;
         if (len > longestLen) {
           longestLen = len;
           longest = i;
+        }
+        if (hasStore && len >= 5 && rand() < 0.35) {
+          const w = Math.min(len - 1.2, 2.6 + rand() * 3);
+          const along = (rand() - 0.5) * (len - w - 0.6);
+          const [rx, rz] = rightOf(nx, nz);
+          awnings.push({ x: mx + nx * 0.05 + rx * along, y: STORE_H - 0.55, z: mz + nz * 0.05 + rz * along, yaw: Math.atan2(nx, nz), w, h: 1, d: 1.1 + rand() * 0.5, c: AWNING_COLORS[Math.floor(rand() * AWNING_COLORS.length)] });
         }
         if (commercial && streetFace && len >= 3.5) {
           const floors = Math.min(4, Math.floor((bd.h - 1) / STORE_H));
@@ -1671,6 +1771,12 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
         }
       }
       flatPolygon(roofB, ring, bd.h, 6);
+      // 옥상 파라펫: 바깥 면 0.7m + 윗면 띠 0.35m. 실루엣이 상자처럼 밋밋하지 않게
+      if (bd.h > 5 && n <= 40) {
+        wallBetween(parapetB, ring, bd.h, ring, bd.h + 0.7, 8, 8);
+        const inner = insetRing(ring, 0.35);
+        if (inner) ringBand(parapetB, ring, inner, bd.h + 0.7, 6);
+      }
       if (bd.h > 55) beacons.push({ x: ccx, y: bd.h + 0.6, z: ccz, yaw: 0, w: 1, h: 1 });
       // 옥상 설비: 실외기·물탱크 (평평한 지붕 위, 테두리 안쪽)
       const area = ringAreaAbs(ring);
@@ -1733,6 +1839,15 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
       yield 'walls';
     }
     if (!roofB.empty) addMesh(roofB.build(), roofMat);
+    if (!parapetB.empty) addMesh(parapetB.build(), parapetMat, true);
+    {
+      const am = addInstanced(awningGeo, awningMat, awnings, undefined, true);
+      counts.awning = awnings.length;
+      if (am) {
+        awnings.forEach((a, i) => am.setColorAt(i, tempColor.setHex(a.c)));
+        am.instanceColor!.needsUpdate = true;
+      }
+    }
     if (!fieldB.empty) addMesh(fieldB.build(), fieldMat);
     if (!standB.empty) addMesh(standB.build(), standMat);
     if (!crownB.empty) addMesh(crownB.build(), crownMat, true);
@@ -1869,7 +1984,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
           if (onRoad) continue;
           // 3m 마다 막힌 곳(건물·정류장)을 보고, 트인 구간마다 띠 하나
           const flush = (a: number, b: number) => {
-            if (b - a >= 4) extrudeStrip(hb, slicePolyline(off.pts, a, b), 0.3, CURB_H - 0.02, CURB_H + 0.5);
+            if (b - a >= 4) extrudeStrip(hb, slicePolyline(off.pts, a, b), 0.3, CURB_H - 0.02, CURB_H + 0.5, true);
           };
           let run = -1;
           let s = s0;
@@ -2143,20 +2258,23 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
       if (count > 40) yield 'parktrees';
     }
     for (const t of trees) obstacles.push({ x: t.x, z: t.z, r: 0.45 * t.s });
-    const placeTrees = () => {
-      if (!treeModels?.length) return;
-      const buckets = treeModels.map(() => [] as Array<{ x: number; z: number; y: number; s: number }>);
-      trees.forEach((t, i) => buckets[(t.park ? i * 7 : i) % treeModels!.length].push(t));
-      treeModels.forEach((m, k) => {
+    // 가로수는 가로수 수종, 공원은 전 수종. 모델은 실제 크기라 s 만 곱한다
+    for (const [models, park] of [
+      [treeSet.street, false],
+      [treeSet.park, true],
+    ] as const) {
+      const buckets = models.map(() => [] as Array<{ x: number; z: number; y: number; s: number }>);
+      trees.forEach((t, i) => {
+        if (t.park === park) buckets[(park ? i * 7 : i) % models.length].push(t);
+      });
+      models.forEach((m, k) => {
         const list = buckets[k];
         if (!list.length) return;
-        const bb = m.geometry.boundingBox!;
-        const base = 7.5 / (bb.max.y - bb.min.y || 1);
         const mesh = new THREE.InstancedMesh(m.geometry, m.materials, list.length);
         list.forEach((t, i) => {
-          dummy.position.set(t.x, t.y - bb.min.y * base * t.s, t.z);
+          dummy.position.set(t.x, t.y, t.z);
           dummy.rotation.set(0, rand() * Math.PI * 2, 0);
-          dummy.scale.setScalar(base * t.s);
+          dummy.scale.setScalar(t.s);
           dummy.updateMatrix();
           mesh.setMatrixAt(i, dummy.matrix);
         });
@@ -2165,9 +2283,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
         mesh.castShadow = true;
         group.add(mesh);
       });
-    };
-    if (treeModels) placeTrees();
-    else treeWaiters.push(() => tiles.has(key) && placeTrees());
+    }
     yield 'placetrees';
 
     // ----- 길가 주차 차량: 동네길·골목(5~6등급) 한쪽 가장자리에 9m 마다 절반 확률 -----
@@ -2319,19 +2435,22 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
   const applyLook = () => {
     const k = night;
     const wetK = wet ? 0.7 : 1;
-    mixHex(groundMat, 0x8d9097, 0x2a2d36, k).multiplyScalar(wetK);
+    mixHex(groundMat, 0x85878b, 0x2a2d36, k).multiplyScalar(wetK);
     groundMat.roughness = wet ? 0.35 : 0.95;
-    mixHex(roadMat, 0x9a9ca3, 0x2c2f38, k).multiplyScalar(wetK);
-    roadMat.roughness = wet ? 0.3 : 0.9;
-    mixHex(walkMat, 0xc4c6ca, 0x3a3e48, k);
-    mixHex(curbMat, 0xb4b6b3, 0x383b42, k);
-    mixHex(hedgeMat, 0x2f5c31, 0x12271a, k);
+    mixHex(roadMat, 0x8e9095, 0x2c2f38, k).multiplyScalar(wetK);
+    roadMat.roughness = wet ? 0.35 : 1;
+    mixHex(walkMat, 0x9f9e98, 0x3a3e48, k);
+    walkMat.roughness = wet ? 0.5 : 1;
+    mixHex(curbMat, 0xa9aaa6, 0x383b42, k);
+    mixHex(grassMat, 0x9aa684, 0x1e271c, k);
+    mixHex(fieldMat, 0xa6bb8e, 0x22301f, k);
+    mixHex(hedgeMat, 0xb0b8a2, 0x2a3326, k);
     mixHex(bollardMat, 0xcfd3d8, 0x3a3f48, k);
     // 가로등 렌즈: 낮엔 흐린 유리, 밤엔 주황빛
     mixHex(lensMat, 0xb8bcc2, 0xffd9a0, k);
     mixHex(deckMat, 0x8a8d94, 0x2c2f38, k);
-    mixHex(parkMat, 0x4f8a4a, 0x15261c, k);
-    mixHex(roofMat, 0x8f9298, 0x23262e, k);
+    mixHex(parkMat, 0x8f9a7e, 0x1a2419, k);
+    mixHex(roofMat, 0x87898d, 0x23262e, k);
     mixHex(hvacMat, 0x9aa0a8, 0x2e323a, k);
     mixHex(tankMat, 0xc9b98a, 0x3a362a, k);
     for (const m of allWalls) {

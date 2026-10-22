@@ -1,48 +1,122 @@
 import * as THREE from 'three';
+import { Sky } from 'three/examples/jsm/objects/Sky.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 
+/**
+ * 렌더 파이프라인: 장면 → GTAO(주변광 차폐, 반해상도) → 블룸 → 톤매핑·sRGB(OutputPass) → 컬러 그레이딩.
+ * 하늘은 대기 산란 모델(Sky)이고, 같은 하늘을 PMREM 으로 구워 scene.environment(유리·도장 반사, 하늘빛 간접광)로 쓴다.
+ * 밤에는 도시 불빛이 번진 그라데이션 구를 하늘 위에 덮는다
+ */
 export interface Stage {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   hemi: THREE.HemisphereLight;
   moon: THREE.DirectionalLight;
-  render(): void;
+  render(dt: number): void;
+  /** 화면 효과(블룸·AO) 켜고 끄기 */
   setBloom(on: boolean): void;
   setBloomStrength(v: number): void;
+  /** 밤 하늘 그라데이션 색 */
   setSky(top: THREE.Color, horizon: THREE.Color): void;
+  /** 해 방향(단위 벡터, y 가 높이)과 날씨. 하늘·환경맵이 바뀐다 */
+  setSun(dir: THREE.Vector3, raining: boolean): void;
+  /** 0 낮 .. 1 밤: 밤 하늘 덮개 불투명도, 환경광 세기 */
+  setNight(night: number): void;
   setExposure(v: number): void;
+  /** 환경맵을 지금 다시 굽는다 (setSun 이 알아서 부르지만 테스트용) */
+  updateEnvironment(): void;
+  /** 디버그: AO 패스 출력 모드 ('off' 가 정상 합성) */
+  setAoDebug(mode: 'off' | 'ao' | 'denoise' | 'normal' | 'depth'): void;
+  /** 디버그: 패스 켜고 끄기 */
+  passes: { gtao: GTAOPass; bloom: UnrealBloomPass; grade: ShaderPass };
   readonly bloom: boolean;
 }
+
+const GradeShader = {
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+    contrast: { value: 1.12 },
+    saturation: { value: 0.94 },
+    vignette: { value: 0.3 },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+    }`,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform float contrast;
+    uniform float saturation;
+    uniform float vignette;
+    varying vec2 vUv;
+    void main() {
+      vec4 c = texture2D( tDiffuse, vUv );
+      vec3 col = c.rgb;
+      float l = dot( col, vec3( 0.2126, 0.7152, 0.0722 ) );
+      col = mix( vec3( l ), col, saturation );
+      col = ( col - 0.5 ) * contrast + 0.5;
+      vec2 d = ( vUv - 0.5 ) * vec2( 1.15, 1.0 );
+      col *= 1.0 - vignette * smoothstep( 0.42, 0.95, length( d ) * 1.25 );
+      gl_FragColor = vec4( col, c.a );
+    }`,
+};
 
 export function createStage(canvas: HTMLCanvasElement): Stage {
   // stencil: 지하차도 트인 구간이 바닥 평면에 구멍을 내는 데 쓴다 (city.ts 의 maskMat/groundMat)
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, stencil: true });
-  renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
-  // 필름 톤매핑: 낮 하늘과 네온이 사진처럼 눌린다
+  const pixelRatio = Math.min(devicePixelRatio || 1, 2);
+  renderer.setPixelRatio(pixelRatio);
+  // 필름 톤매핑은 OutputPass 에서 적용된다 (렌더타깃에 그릴 땐 재질 셰이더가 톤매핑을 하지 않는다)
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.0;
+  renderer.toneMappingExposure = 0.76;
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
 
   const scene = new THREE.Scene();
-  // 지평선은 도시 불빛이 번진 보랏빛, 위로 갈수록 어두운 남색. 안개색은 지평선색과 맞춘다. 낮·밤은 daylight 가 바꾼다
-  const HORIZON = 0x161528;
+  const HORIZON = 0x2b2650;
   scene.background = new THREE.Color(HORIZON);
   scene.fog = new THREE.FogExp2(HORIZON, 0.0045);
-  const skyMat = new THREE.ShaderMaterial({
+
+  // ----- 낮 하늘: 대기 산란 + 절차 구름 -----
+  const sky = new Sky();
+  sky.name = 'sky';
+  sky.scale.setScalar(2000);
+  sky.renderOrder = -10;
+  sky.frustumCulled = false;
+  const su = sky.material.uniforms;
+  su.turbidity.value = 3;
+  su.rayleigh.value = 1.4;
+  su.mieCoefficient.value = 0.004;
+  su.mieDirectionalG.value = 0.86;
+  su.cloudCoverage.value = 0.42;
+  su.cloudDensity.value = 0.45;
+  su.cloudScale.value = 0.00025;
+  su.cloudElevation.value = 0.45;
+  scene.add(sky);
+
+  // ----- 밤 하늘 덮개: 지평선은 도시 불빛이 번진 보랏빛, 위로 갈수록 어두운 남색. 낮엔 투명 -----
+  const nightMat = new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,
+    transparent: true,
     fog: false,
-    uniforms: { top: { value: new THREE.Color(0x05070f) }, horizon: { value: new THREE.Color(HORIZON) } },
+    uniforms: { top: { value: new THREE.Color(0x0c1024) }, horizon: { value: new THREE.Color(HORIZON) }, opacity: { value: 1 } },
     vertexShader: 'varying float vy; void main(){ vy = normalize(position).y; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-    fragmentShader: 'uniform vec3 top; uniform vec3 horizon; varying float vy; void main(){ float t = smoothstep(-0.05, 0.45, vy); gl_FragColor = vec4(mix(horizon, top, t), 1.0); }',
+    fragmentShader: 'uniform vec3 top; uniform vec3 horizon; uniform float opacity; varying float vy; void main(){ float t = smoothstep(-0.05, 0.45, vy); gl_FragColor = vec4(mix(horizon, top, t), opacity); }',
   });
-  const sky = new THREE.Mesh(new THREE.SphereGeometry(2400, 24, 12), skyMat);
-  sky.name = 'sky';
-  scene.add(sky);
+  const nightSky = new THREE.Mesh(new THREE.SphereGeometry(1900, 24, 12), nightMat);
+  nightSky.name = 'nightSky';
+  nightSky.renderOrder = -9;
+  nightSky.frustumCulled = false;
+  scene.add(nightSky);
 
   const camera = new THREE.PerspectiveCamera(62, 1, 0.1, 2600);
 
@@ -52,23 +126,57 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
   moon.position.set(-120, 200, 80);
   scene.add(moon);
 
-  // 블룸: 창문·네온·가로등처럼 밝은 것만 번지게 문턱을 높게 둔다
+  // ----- 환경맵: 같은 하늘을 작은 장면에서 PMREM 으로 -----
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const envScene = new THREE.Scene();
+  const envSky = new Sky();
+  envSky.material = sky.material;
+  envSky.scale.setScalar(800);
+  envScene.add(envSky);
+  let envTarget: THREE.WebGLRenderTarget | null = null;
+  const updateEnvironment = () => {
+    // 태양 원반은 빼고 굽는다. 원반(밝기 수천)이 들어가면 흐려진 뒤에도 간접광이 폭주해 화면이 하얗게 날아간다
+    su.showSunDisc.value = 0;
+    const next = pmrem.fromScene(envScene, 0, 0.5, 900);
+    su.showSunDisc.value = 1;
+    scene.environment = next.texture;
+    envTarget?.dispose();
+    envTarget = next;
+  };
+  let envSunY = 99;
+  let envRain = false;
+
+  // ----- 후처리 -----
   const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: THREE.HalfFloatType, stencilBuffer: true }));
   composer.addPass(new RenderPass(scene, camera));
-  const bloomPass = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.55, 0.45, 0.82);
+  // 주변광 차폐: 건물 밑동·연석·차 밑에 접촉 그림자. 반해상도로 돌려 비용을 줄인다
+  const gtao = new GTAOPass(scene, camera, Math.floor((innerWidth * pixelRatio) / 2), Math.floor((innerHeight * pixelRatio) / 2));
+  gtao.output = GTAOPass.OUTPUT.Default;
+  gtao.blendIntensity = 0.9;
+  gtao.updateGtaoMaterial({ radius: 2.5, distanceExponent: 1.0, thickness: 4.0, scale: 2.0, samples: 16, distanceFallOff: 0, screenSpaceRadius: false });
+  gtao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, radiusExponent: 1, rings: 2, samples: 12 });
+  composer.addPass(gtao);
+  composer.addPass(new OutputPass());
+  // 블룸: 톤매핑 뒤(0..1)에서 창문·네온·가로등처럼 밝은 것만 번지게 문턱을 높게 둔다.
+  // 톤매핑 전에 두면 햇빛 받은 면(1 넘는 값) 전부에 번져 화면이 뿌옇게 된다
+  const bloomPass = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.55, 0.45, 0.92);
   composer.addPass(bloomPass);
+  const grade = new ShaderPass(GradeShader);
+  composer.addPass(grade);
   let bloom = true;
 
   const resize = () => {
     renderer.setSize(innerWidth, innerHeight, false);
     composer.setSize(innerWidth, innerHeight);
     bloomPass.setSize(innerWidth, innerHeight);
+    gtao.setSize(Math.max(1, Math.floor((innerWidth * pixelRatio) / 2)), Math.max(1, Math.floor((innerHeight * pixelRatio) / 2)));
     camera.aspect = innerWidth / innerHeight;
     camera.updateProjectionMatrix();
   };
   addEventListener('resize', resize);
   resize();
 
+  let time = 0;
   return {
     renderer,
     scene,
@@ -78,23 +186,54 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
     get bloom() {
       return bloom;
     },
-    render() {
+    render(dt) {
+      time += dt;
       sky.position.copy(camera.position);
-      if (bloom) composer.render();
-      else renderer.render(scene, camera);
+      nightSky.position.copy(camera.position);
+      su.time.value = time;
+      composer.render();
     },
     setBloom(on) {
       bloom = on;
+      bloomPass.enabled = on;
+      gtao.enabled = on;
     },
     setBloomStrength(v) {
       bloomPass.strength = v;
     },
     setSky(top, horizon) {
-      (skyMat.uniforms.top.value as THREE.Color).copy(top);
-      (skyMat.uniforms.horizon.value as THREE.Color).copy(horizon);
+      (nightMat.uniforms.top.value as THREE.Color).copy(top);
+      (nightMat.uniforms.horizon.value as THREE.Color).copy(horizon);
+    },
+    setSun(dir, raining) {
+      su.sunPosition.value.copy(dir);
+      if (raining !== envRain) {
+        envRain = raining;
+        su.turbidity.value = raining ? 14 : 3;
+        su.rayleigh.value = raining ? 0.6 : 1.4;
+        su.mieCoefficient.value = raining ? 0.02 : 0.004;
+        su.cloudCoverage.value = raining ? 0.95 : 0.42;
+        su.cloudDensity.value = raining ? 0.8 : 0.45;
+        envSunY = 99;
+      }
+      // 해 높이가 조금 바뀔 때마다 환경맵을 다시 굽는다 (낮엔 30초쯤에 한 번)
+      if (Math.abs(dir.y - envSunY) > 0.05) {
+        envSunY = dir.y;
+        updateEnvironment();
+      }
+    },
+    setNight(night) {
+      nightMat.uniforms.opacity.value = Math.min(1, Math.max(0, (night - 0.15) / 0.7));
+      nightSky.visible = night > 0.15;
+      scene.environmentIntensity = 0.36 - 0.32 * night;
     },
     setExposure(v) {
       renderer.toneMappingExposure = v;
     },
+    updateEnvironment,
+    setAoDebug(mode) {
+      gtao.output = { off: GTAOPass.OUTPUT.Default, ao: GTAOPass.OUTPUT.AO, denoise: GTAOPass.OUTPUT.Denoise, normal: GTAOPass.OUTPUT.Normal, depth: GTAOPass.OUTPUT.Depth }[mode];
+    },
+    passes: { gtao, bloom: bloomPass, grade },
   };
 }

@@ -51,6 +51,19 @@ export const MODELS: Record<string, ModelDef> = {
   // car_phantom: kenney('race-future', 4.6),
 };
 
+const upgraded = new Map<THREE.Material, THREE.Material>();
+/** 모델에 들어 있는 재질(Lambert/Phong/Standard)을 같은 색·텍스처의 클리어코트 도장 재질로. 같은 원본은 한 번만 */
+export function upgradeCarMaterial(m: THREE.Material): THREE.Material {
+  let u = upgraded.get(m);
+  if (u) return u;
+  const src = m as THREE.MeshStandardMaterial;
+  const color = src.color ? src.color.clone() : new THREE.Color(0x888888);
+  u = new THREE.MeshPhysicalMaterial({ color, map: src.map ?? null, roughness: 0.42, metalness: 0.2, clearcoat: 0.7, clearcoatRoughness: 0.18, envMapIntensity: 1.1 });
+  u.name = m.name;
+  upgraded.set(m, u);
+  return u;
+}
+
 const gltfLoader = new GLTFLoader();
 const fbxLoader = new FBXLoader();
 const cache = new Map<string, Promise<THREE.Group | null>>();
@@ -98,13 +111,9 @@ function normalize(obj: THREE.Object3D, def: ModelDef): THREE.Group {
     if (!mesh.isMesh) return;
     mesh.castShadow = false;
     mesh.receiveShadow = false;
-    // FBX 재질은 밤 조명에 너무 어둡게 나오는 경우가 있어 Lambert 로 통일한다
+    // 차체 도장 재질로 통일: 클리어코트가 하늘 환경맵을 비춰 플라스틱 느낌을 없앤다
     const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-    const converted = mats.map((m) => {
-      if (m instanceof THREE.MeshLambertMaterial || m instanceof THREE.MeshStandardMaterial) return m;
-      const src = m as THREE.MeshPhongMaterial;
-      return new THREE.MeshLambertMaterial({ color: src.color ?? new THREE.Color(0x888888), map: src.map ?? null });
-    });
+    const converted = mats.map((m) => upgradeCarMaterial(m));
     mesh.material = Array.isArray(mesh.material) ? converted : converted[0];
   });
   // 차체·바퀴 여러 메시를 하나로 합쳐 차 한 대당 그리기 호출을 1번으로
