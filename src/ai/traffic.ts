@@ -8,7 +8,7 @@ import { buildForKind, buildSedan } from '../vehicle/procedural.ts';
 import { PROBE, RADIUS, type PlayerState } from '../vehicle/player.ts';
 import type { Dir, Edge, Node, RoadGraph, Step } from '../world/graph.ts';
 import type { BusStop } from '../world/city.ts';
-import { curveBetween, edgeSeg, segPos, turnOf, type EdgeSeg, type Seg, type Turn } from '../world/roads.ts';
+import { curveBetween, edgeSeg, laneRoles, roleAllows, segPos, turnOf, type EdgeSeg, type Seg, type Turn } from '../world/roads.ts';
 import type { Signals } from '../world/signals.ts';
 
 export interface RivalSpec {
@@ -208,17 +208,37 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
     return turnOf(end.hx, end.hz, start.hx, start.hz);
   }
 
-  /** 직선 구간에 들어설 때 다음 방향과 그에 맞는 차선을 정한다 */
+  /** 버스전용차로 번호 (없으면 -1). 중앙은 1차로, 가로변은 바깥 차로 */
+  const busLaneIndex = (e: Edge, dir: Dir): number => (e.busLane === 'median' ? 0 : e.busLane === 'curb' ? g.lanes(e, dir) - 1 : -1);
+  const isBus = (n: Npc) => n.kind.id.startsWith('bus');
+  /** 이 차가 그 차선을 써도 되는지: 버스전용차로는 버스만, 일반 차선은 버스도 (차선이 하나뿐이면 누구나) */
+  const laneOk = (n: Npc, e: Edge, dir: Dir, lane: number): boolean => {
+    const bl = busLaneIndex(e, dir);
+    if (bl < 0 || g.lanes(e, dir) < 2) return true;
+    return isBus(n) ? lane === bl : lane !== bl;
+  };
+
+  /** 직선 구간에 들어설 때 다음 방향과 그에 맞는 차선을 정한다 (바닥 화살표와 같은 laneRoles 규칙) */
   function planNext(n: Npc, seg: EdgeSeg): void {
     n.next = chooseStep(n, seg);
     const lanes = g.lanes(seg.e, seg.dir);
     const turn = turnFor(seg, n.next);
     n.turn = turn;
     n.servedStop = null;
+    const roles = laneRoles(g, seg.e, seg.dir).roles;
+    // 이 방향으로 갈 수 있는 차선 중 지금 차선과 가장 가까운 것. 버스는 전용차로를, 일반 차는 전용차로를 피한다
     let lane = n.lane;
-    if (turn === 'right') lane = lanes - 1;
-    else if (turn === 'left' || turn === 'uturn') lane = 0;
-    else if (n.kind.lane !== undefined) lane = n.kind.lane === 1 ? lanes - 1 : 0;
+    let best = Infinity;
+    const prefer = isBus(n) ? lanes - 1 : n.kind.lane === 1 ? lanes - 1 : n.kind.lane === 0 ? 0 : n.lane;
+    for (let i = 0; i < lanes; i++) {
+      if (!roleAllows(roles[i] ?? 'straight', turn)) continue;
+      const cost = Math.abs(i - prefer) + (laneOk(n, seg.e, seg.dir, i) ? 0 : 10);
+      if (cost < best) {
+        best = cost;
+        lane = i;
+      }
+    }
+    if (best === Infinity) lane = turn === 'right' ? lanes - 1 : turn === 'left' || turn === 'uturn' ? 0 : lane;
     lane = clamp(lane, 0, lanes - 1);
     n.latTarget = g.laneOffset(seg.e, seg.dir, lane);
   }
@@ -234,7 +254,13 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
     } while ((!g.canTravel(e, dir) || e.len < 20 || (kind.length > 8 && e.rank >= 6)) && guard++ < 200);
     const seg = edgeSeg(g, e, dir);
     const lanes = g.lanes(e, dir);
-    const lane = kind.lane === 1 ? lanes - 1 : kind.lane === 0 ? 0 : rint(lanes);
+    let lane = kind.lane === 1 ? lanes - 1 : kind.lane === 0 ? 0 : rint(lanes);
+    // 버스전용차로: 버스는 거기, 일반 차는 피한다
+    const bl = e.busLane === 'median' ? 0 : e.busLane === 'curb' ? lanes - 1 : -1;
+    if (bl >= 0 && lanes >= 2) {
+      if (kind.id.startsWith('bus')) lane = bl;
+      else if (lane === bl) lane = bl === 0 ? 1 : bl - 1;
+    }
     const [c0, c1] = kind.cruise;
     const built = buildMesh(kind, hex, rival, index);
     const n: Npc = {
@@ -498,7 +524,9 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
     }
     const passing = n.racing ? ahead.gap < 30 : ahead.gap < 18 && ahead.speed < n.cruise - 2;
     if (!passing) return;
-    const other = n.lane + 1 < lanes ? n.lane + 1 : n.lane - 1;
+    let other = n.lane + 1 < lanes ? n.lane + 1 : n.lane - 1;
+    if (!n.racing && !laneOk(n, n.seg.e, n.seg.dir, other)) other = n.lane - 1 >= 0 && laneOk(n, n.seg.e, n.seg.dir, n.lane - 1) ? n.lane - 1 : -1;
+    if (other < 0 || other >= lanes) return;
     if (n.kind.lane !== undefined && !n.racing) return;
     const otherLat = g.laneOffset(n.seg.e, n.seg.dir, other);
     if (laneClear(n, S, otherLat)) {

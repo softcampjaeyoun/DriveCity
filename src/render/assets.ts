@@ -252,8 +252,9 @@ export function storefrontTextures(seed: number): { map: THREE.CanvasTexture; em
   return { map: toTex(c), emissive: toTex(e) };
 }
 
-/** 차선 바닥 화살표 (직진 / 좌회전 / 우회전 / 직진+우회전). 세로로 긴 1:2.5 */
-export function arrowTexture(kind: 'straight' | 'left' | 'right' | 'straightRight'): THREE.CanvasTexture {
+export type ArrowKind = 'straight' | 'left' | 'right' | 'straightRight' | 'straightLeft' | 'leftRight';
+/** 차선 바닥 화살표 (직진 / 좌회전 / 우회전 / 직진+우회전 / 직진+좌회전 / 좌우회전). 세로로 긴 1:2.5 */
+export function arrowTexture(kind: ArrowKind): THREE.CanvasTexture {
   const [c, g] = canvas(128, 320);
   g.clearRect(0, 0, 128, 320);
   g.fillStyle = '#f0f2f6';
@@ -266,21 +267,42 @@ export function arrowTexture(kind: 'straight' | 'left' | 'right' | 'straightRigh
     g.closePath();
     g.fill();
   };
-  if (kind === 'straight' || kind === 'straightRight') {
+  const straight = kind === 'straight' || kind === 'straightRight' || kind === 'straightLeft';
+  const left = kind === 'left' || kind === 'straightLeft' || kind === 'leftRight';
+  const right = kind === 'right' || kind === 'straightRight' || kind === 'leftRight';
+  if (straight) {
     shaft(64, 70, 300, 18);
     head(64, 70, 0, -1, 44);
   }
-  if (kind === 'left') {
-    shaft(64, 120, 300, 18);
-    g.fillRect(24, 111, 50, 18);
-    head(24, 120, -1, 0, 40);
+  if (left) {
+    const y = straight ? 170 : 120;
+    if (!straight) shaft(64, y, 300, 18);
+    g.fillRect(24, y - 9, 50, 18);
+    head(24, y, -1, 0, 40);
   }
-  if (kind === 'right' || kind === 'straightRight') {
-    const y = kind === 'right' ? 120 : 170;
-    if (kind === 'right') shaft(64, y, 300, 18);
+  if (right) {
+    const y = straight ? 170 : 120;
+    if (!straight && kind !== 'leftRight') shaft(64, y, 300, 18);
+    if (kind === 'leftRight') shaft(64, y, 300, 18);
     g.fillRect(55, y - 9, 50, 18);
     head(104, y, 1, 0, 40);
   }
+  const t = toTex(c);
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  return t;
+}
+
+/** 버스전용차로 바닥 글씨 (세로로 긴 1:3, 흰 글씨) */
+export function busLaneTexture(): THREE.CanvasTexture {
+  const [c, g] = canvas(128, 384);
+  g.clearRect(0, 0, 128, 384);
+  g.fillStyle = '#ffffff';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.font = `bold 58px ${KFONT}`;
+  // 달리는 방향에서 읽히게 위에서 아래로 한 글자씩
+  const word = '버스전용';
+  for (let i = 0; i < word.length; i++) g.fillText(word[word.length - 1 - i], 64, 48 + i * 96);
   const t = toTex(c);
   t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
   return t;
@@ -497,8 +519,10 @@ export function mergeObject(root: THREE.Object3D, recolor?: (m: THREE.MeshStanda
         // 그룹별로 쪼갠다
         for (const grp of geo.groups) {
           const sub = new THREE.BufferGeometry();
-          const idx = geo.index!;
-          const arr = idx.array.slice(grp.start, grp.start + grp.count) as unknown as number[];
+          // 인덱스가 없는 지오메트리(FBX 가 흔히 그렇다)는 그룹 범위가 곧 꼭짓점 번호다
+          const count = Math.min(grp.count, (geo.index ? geo.index.count : geo.attributes.position.count) - grp.start);
+          const arr: number[] = geo.index ? (Array.from(geo.index.array.slice(grp.start, grp.start + count)) as number[]) : Array.from({ length: count }, (_, k) => grp.start + k);
+          if (!arr.length) continue;
           sub.setAttribute('position', geo.attributes.position);
           sub.setAttribute('normal', geo.attributes.normal);
           sub.setAttribute('uv', geo.attributes.uv);

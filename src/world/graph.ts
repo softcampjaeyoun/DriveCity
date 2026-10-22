@@ -30,7 +30,20 @@ export interface Edge extends EdgeData {
   ya: number;
   yb: number;
   yt: number;
+  /** 버스전용차로: 중앙(1차로) / 가로변(바깥 차로) / 없음 */
+  busLane: 'median' | 'curb' | null;
 }
+
+/** 서울 중앙버스전용차로가 있는 길 (이 지도 영역 안의 것 위주) */
+const MEDIAN_BUS_ROADS = new Set(['강남대로', '천호대로', '송파대로', '한강대로', '동작대로', '시흥대로', '도봉로', '미아로', '왕산로', '통일로', '망우로', '경인로', '공항로', '마포로', '하정로', '수색로', '성산로', '양화로', '신반포로', '새문안로', '율곡로']);
+/** 가로변 버스전용차로가 흔한 큰길 */
+const CURB_BUS_ROADS = new Set(['테헤란로', '봉은사로', '도산대로', '올림픽로', '삼성로', '언주로', '논현로', '서초대로', '반포대로', '남부순환로', '양재대로', '영동대로', '위례성대로', '오금로', '광나루로', '왕십리로', '한남대로', '이태원로', '녹사평대로', '압구정로', '선릉로', '사평대로', '동일로', '자양로', '천호옛길', '구천면로', '고산자로', '마장로']);
+export const busLaneOf = (name: string, rank: number, lanesPerDir: number, link: boolean): 'median' | 'curb' | null => {
+  if (link || rank > 3) return null;
+  if (MEDIAN_BUS_ROADS.has(name) && lanesPerDir >= 3) return 'median';
+  if (CURB_BUS_ROADS.has(name) && lanesPerDir >= 3) return 'curb';
+  return null;
+};
 
 export interface PointOn {
   x: number;
@@ -173,7 +186,7 @@ export function createGraph(index: MapIndex): RoadGraph {
       const laneW = rank >= 6 ? 2.6 : LANE_W;
       const width = lanesTotal * laneW;
       const lv = d.lv ?? 0;
-      const e: Edge = { ...d, lv, cum, len: cum[cum.length - 1] || d.len, width, half: width / 2, rank, laneW, tile: key, ya: nodes.get(d.a)?.[2] ?? 0, yb: nodes.get(d.b)?.[2] ?? 0, yt: levelHeight(lv) };
+      const e: Edge = { ...d, lv, cum, len: cum[cum.length - 1] || d.len, width, half: width / 2, rank, laneW, tile: key, ya: nodes.get(d.a)?.[2] ?? 0, yb: nodes.get(d.b)?.[2] ?? 0, yt: levelHeight(lv), busLane: busLaneOf(d.name, rank, Math.max(d.lf, d.lb), d.link) };
       edges.set(e.id, e);
       ids.push(e.id);
       totalLen += e.len;

@@ -69,6 +69,70 @@ export function turnOf(h0x: number, h0z: number, h1x: number, h1z: number): Turn
   return cross > 0 ? 'right' : 'left';
 }
 
+export type LaneRole = 'left' | 'straight' | 'right' | 'straightLeft' | 'straightRight' | 'leftRight';
+export interface LaneRoles {
+  hasLeft: boolean;
+  hasStraight: boolean;
+  hasRight: boolean;
+  hasUturn: boolean;
+  /** 1차로(안쪽)부터 바깥쪽까지 각 차선이 허용하는 방향 */
+  roles: LaneRole[];
+}
+
+/**
+ * 간선 e 를 dir 방향으로 달려 교차로에 들어갈 때, 그 교차로에서 실제로 갈 수 있는 방향으로 차선 역할을 정한다.
+ * 서울식: 안쪽 1차로 좌회전(4차로 이상이면 2개), 바깥 차로 직진+우회전(4차로 이상이면 우회전 전용), 가운데 직진.
+ * 2차로면 직좌/직우, 1차로면 되는 방향을 전부 한 차로에. 바닥 화살표와 교통 AI 차선 선택이 같은 규칙을 쓴다
+ */
+export function laneRoles(g: RoadGraph, e: Edge, dir: Dir): LaneRoles {
+  const node = dir === 1 ? e.b : e.a;
+  const end = g.pointAt(e, dir, Math.max(0, e.len - 0.5));
+  let hasLeft = false;
+  let hasStraight = false;
+  let hasRight = false;
+  let hasUturn = false;
+  for (const o of g.edgesAt(node)) {
+    const od: Dir = o.a === node ? 1 : -1;
+    if (!g.canTravel(o, od)) continue;
+    if (o.id === e.id) {
+      hasUturn = true;
+      continue;
+    }
+    const start = g.pointAt(o, od, Math.min(o.len - 0.5, g.cut(o, node) + 0.5));
+    const t = turnOf(end.hx, end.hz, start.hx, start.hz);
+    if (t === 'left') hasLeft = true;
+    else if (t === 'right') hasRight = true;
+    else if (t === 'straight') hasStraight = true;
+    else hasUturn = true;
+  }
+  const L = Math.max(1, g.lanes(e, dir));
+  const roles: LaneRole[] = [];
+  if (!hasLeft && !hasRight && !hasStraight) {
+    for (let i = 0; i < L; i++) roles.push('straight');
+  } else if (L === 1) {
+    roles.push(hasStraight ? (hasLeft && hasRight ? 'straight' : hasLeft ? 'straightLeft' : hasRight ? 'straightRight' : 'straight') : hasLeft && hasRight ? 'leftRight' : hasLeft ? 'left' : 'right');
+  } else if (L === 2) {
+    roles.push(hasLeft ? (hasStraight ? 'straightLeft' : 'left') : 'straight', hasRight ? (hasStraight ? 'straightRight' : 'right') : hasStraight ? 'straight' : 'left');
+  } else {
+    const nLeft = hasLeft ? (hasStraight ? (L >= 4 ? 2 : 1) : Math.max(1, Math.ceil(L / 2))) : 0;
+    const nRight = hasRight ? (hasStraight || hasLeft ? 1 : L) : 0;
+    for (let i = 0; i < L; i++) {
+      if (i < nLeft) roles.push('left');
+      else if (i >= L - nRight) roles.push(hasStraight ? (L >= 4 ? 'right' : 'straightRight') : 'right');
+      else roles.push(hasStraight ? 'straight' : hasLeft ? 'left' : 'right');
+    }
+  }
+  return { hasLeft, hasStraight, hasRight, hasUturn, roles };
+}
+
+/** 이 차선 역할로 turn 방향으로 갈 수 있는지 */
+export const roleAllows = (role: LaneRole, turn: Turn): boolean => {
+  if (turn === 'uturn') return role === 'left' || role === 'straightLeft' || role === 'leftRight';
+  if (turn === 'left') return role === 'left' || role === 'straightLeft' || role === 'leftRight';
+  if (turn === 'right') return role === 'right' || role === 'straightRight' || role === 'leftRight';
+  return role === 'straight' || role === 'straightLeft' || role === 'straightRight';
+};
+
 /** 두 점을 잇는 곡선. 제어점은 두 진행 방향 직선의 교점 (없으면 중점) */
 export function curveBetween(from: PointOn, lat0: number, to: PointOn, lat1: number): CurveSeg {
   const [r0x, r0z] = rightOf(from.hx, from.hz);

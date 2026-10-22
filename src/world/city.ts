@@ -1,12 +1,12 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { mulberry32 } from '../util/math.ts';
-import { aptTextures, arrowTexture, billboardTexture, dongTexture, facadeSet, loadMerged, loadTex, shopNameAtlas, signTexture, storefrontTextures, streetSignTexture, subwaySignTexture, SUB_KO, type MergedModel } from '../render/assets.ts';
+import { aptTextures, arrowTexture, billboardTexture, busLaneTexture, dongTexture, facadeSet, loadMerged, loadTex, shopNameAtlas, signTexture, storefrontTextures, streetSignTexture, subwaySignTexture, SUB_KO, type ArrowKind, type MergedModel } from '../render/assets.ts';
 import { glowTexture, windowTexture } from '../render/textures.ts';
 import { isFlat, type Edge, type Node, type RoadGraph } from './graph.ts';
 import type { BuildingData, MapIndex, TileData } from './mapdata.ts';
 import { pointInRing, type Obstacle } from './collision.ts';
-import { CURB_H, hasCurb, rightOf, walkWidth } from './roads.ts';
+import { CURB_H, hasCurb, laneRoles, rightOf, walkWidth } from './roads.ts';
 
 /** 보행자가 걷는 길 하나: 인도 폴리라인, 횡단보도(인도 끝 → 연석 → 건너편 연석 → 건너편 인도 끝), 교차로 모서리 연결 */
 export interface WalkPath {
@@ -39,6 +39,8 @@ export interface TileScene {
   obstacles: Obstacle[];
   walks: WalkPath[];
   stops: BusStop[];
+  /** 디버그용 개수 (지하철 출입구, 중앙분리대 띠, 주차 차량 ...) */
+  counts: Record<string, number>;
   dispose(): void;
 }
 
@@ -429,6 +431,42 @@ function ringAreaAbs(ring: number[]): number {
   return Math.abs(a / 2);
 }
 
+/** 점에서 폴리라인까지의 거리 */
+function distToPolyline(pts: number[], x: number, z: number): number {
+  let best = Infinity;
+  for (let i = 0; i < pts.length - 2; i += 2) {
+    const x0 = pts[i];
+    const z0 = pts[i + 1];
+    const dx = pts[i + 2] - x0;
+    const dz = pts[i + 3] - z0;
+    const l2 = dx * dx + dz * dz || 1;
+    const t = Math.min(1, Math.max(0, ((x - x0) * dx + (z - z0) * dz) / l2));
+    best = Math.min(best, Math.hypot(x - (x0 + dx * t), z - (z0 + dz * t)));
+  }
+  return best;
+}
+
+/** 바깥 고리와 안쪽 고리 사이의 평면 띠 (경기장 지붕 링). 두 고리는 같은 꼭짓점 수여야 한다 */
+function ringBand(b: GeoBuilder, outer: number[], inner: number[], y: number, uvScale = 6): void {
+  const n = outer.length / 2;
+  const o: number[] = [];
+  const i2: number[] = [];
+  for (let i = 0; i < n; i++) {
+    o.push(b.vertex(outer[i * 2], y, outer[i * 2 + 1], 0, 1, 0, outer[i * 2] / uvScale, outer[i * 2 + 1] / uvScale));
+    i2.push(b.vertex(inner[i * 2], y, inner[i * 2 + 1], 0, 1, 0, inner[i * 2] / uvScale, inner[i * 2 + 1] / uvScale));
+  }
+  let area = 0;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    area += outer[i * 2] * outer[j * 2 + 1] - outer[j * 2] * outer[i * 2 + 1];
+  }
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    if (area < 0) b.quad(o[i], o[j], i2[j], i2[i]);
+    else b.quad(o[j], o[i], i2[i], i2[j]);
+  }
+}
+
 /** 평면 폴리곤 (지붕, 물, 공원). 고리 방향이 어느 쪽이든 윗면이 위를 보게 맞춘다 (뒤집히면 양면 재질이라도 법선이 아래를 봐 검게 나온다) */
 function flatPolygon(b: GeoBuilder, ring: number[], y: number, uvScale = 20): void {
   let area = 0;
@@ -521,8 +559,9 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
   const railMat = new THREE.MeshLambertMaterial({ color: 0x23262e, side: THREE.DoubleSide });
   const roadMat = new THREE.MeshStandardMaterial({ map: loadTex('Asphalt033_Color.jpg', true, 1, 1), normalMap: loadTex('Asphalt033_NormalGL.jpg', false, 1, 1), roughness: 0.9, color: 0x9a9ca3 });
   // 인도 보도블록 uv 는 m 단위(2m 마다 한 장). 연석은 화강석, 띠녹지는 회양목 울타리
-  const walkMat = new THREE.MeshStandardMaterial({ map: loadTex('PavingStones151_Color.jpg', true, 1, 1), normalMap: loadTex('PavingStones151_NormalGL.jpg', false, 1, 1), roughness: 0.9, color: 0xc4c6ca });
-  const curbMat = new THREE.MeshStandardMaterial({ color: 0xb4b6b3, roughness: 0.8, side: THREE.DoubleSide });
+  // 인도·연석도 스텐실 1(지하철 출입구 계단 구멍)인 곳은 비운다
+  const walkMat = new THREE.MeshStandardMaterial({ map: loadTex('PavingStones151_Color.jpg', true, 1, 1), normalMap: loadTex('PavingStones151_NormalGL.jpg', false, 1, 1), roughness: 0.9, color: 0xc4c6ca, stencilWrite: true, stencilFunc: THREE.NotEqualStencilFunc, stencilRef: 1 });
+  const curbMat = new THREE.MeshStandardMaterial({ color: 0xb4b6b3, roughness: 0.8, side: THREE.DoubleSide, stencilWrite: true, stencilFunc: THREE.NotEqualStencilFunc, stencilRef: 1 });
   const hedgeMat = new THREE.MeshLambertMaterial({ color: 0x2f5c31 });
   const grateMat = new THREE.MeshStandardMaterial({ color: 0x2c2e33, roughness: 0.6, metalness: 0.5 });
   const bollardMat = new THREE.MeshStandardMaterial({ color: 0xcfd3d8, roughness: 0.35, metalness: 0.7 });
@@ -545,12 +584,19 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
   const shelterGlassMat = new THREE.MeshPhongMaterial({ color: 0x9fc0e0, transparent: true, opacity: 0.45, shininess: 120 });
   const shelterSignMat = new THREE.MeshBasicMaterial({ color: 0x1f6fd1 });
   const manholeMat = new THREE.MeshStandardMaterial({ color: 0x3a3d44, roughness: 0.6, metalness: 0.5 });
-  const arrowMats = {
-    straight: new THREE.MeshBasicMaterial({ map: arrowTexture('straight'), transparent: true, depthWrite: false }),
-    left: new THREE.MeshBasicMaterial({ map: arrowTexture('left'), transparent: true, depthWrite: false }),
-    right: new THREE.MeshBasicMaterial({ map: arrowTexture('right'), transparent: true, depthWrite: false }),
-    straightRight: new THREE.MeshBasicMaterial({ map: arrowTexture('straightRight'), transparent: true, depthWrite: false }),
-  };
+  const arrowKinds: ArrowKind[] = ['straight', 'left', 'right', 'straightRight', 'straightLeft', 'leftRight'];
+  const arrowMats = Object.fromEntries(arrowKinds.map((k) => [k, new THREE.MeshBasicMaterial({ map: arrowTexture(k), transparent: true, depthWrite: false })])) as Record<ArrowKind, THREE.MeshBasicMaterial>;
+  // 버스전용차로 도색(파랑)과 글씨
+  const busLaneMat = new THREE.MeshBasicMaterial({ color: 0x2b66c9, transparent: true, opacity: 0.55, depthWrite: false });
+  const busTextMat = new THREE.MeshBasicMaterial({ map: busLaneTexture(), transparent: true, depthWrite: false });
+  // 거리 소품: 쓰레기통, 변압기함. 경기장 필드, 돔, 첨탑
+  const trashMat = new THREE.MeshStandardMaterial({ color: 0x2f5a3a, roughness: 0.7 });
+  const utilityBoxMat = new THREE.MeshStandardMaterial({ color: 0x7c8a80, roughness: 0.6, metalness: 0.2 });
+  const fieldMat = new THREE.MeshLambertMaterial({ color: 0x3f8a3f });
+  const standMat = new THREE.MeshLambertMaterial({ color: 0x9aa0a8, side: THREE.DoubleSide });
+  const domeMat = new THREE.MeshStandardMaterial({ color: 0xd9dde3, roughness: 0.5, metalness: 0.2 });
+  const spireMat = new THREE.MeshStandardMaterial({ color: 0x3b4f7a, roughness: 0.6 });
+  const crownMat = new THREE.MeshStandardMaterial({ color: 0xe8ecf4, roughness: 0.3, metalness: 0.4 });
   /** 상호 간판 아틀라스 재질 (타일마다 하나). 밤낮 밝기 조절을 위해 모아 둔다 */
   const shopMats = new Set<THREE.MeshBasicMaterial>();
   /** 캔버스 텍스처를 미리 GPU 에 올려 첫 렌더링 프레임이 멈칫하지 않게 */
@@ -628,6 +674,9 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
   const lensGeo = new THREE.BoxGeometry(0.34, 0.05, 0.7).translate(0, 8.03, 2.5);
   const bollardGeo = mergeGeometries([new THREE.CylinderGeometry(0.07, 0.075, 0.85, 8).translate(0, 0.425, 0), new THREE.SphereGeometry(0.075, 8, 6).translate(0, 0.85, 0)])!;
   const grateGeo = new THREE.PlaneGeometry(1.5, 1.5).rotateX(-Math.PI / 2);
+  const trashGeo = new THREE.CylinderGeometry(0.26, 0.24, 0.84, 10);
+  const domeGeo = new THREE.SphereGeometry(1, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2);
+  const coneGeo = new THREE.ConeGeometry(1, 1, 8).translate(0, 0.5, 0);
   const poolGeo = new THREE.PlaneGeometry(17, 17).rotateX(-Math.PI / 2);
   const tankGeo = new THREE.CylinderGeometry(0.9, 0.9, 1.6, 10);
   const manholeGeo = new THREE.CircleGeometry(0.4, 12).rotateX(-Math.PI / 2);
@@ -649,6 +698,31 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
     for (const m of treeModels) m.geometry.computeBoundingBox();
     for (const w of treeWaiters) w();
     treeWaiters.length = 0;
+  })();
+
+  // ----- 길가 주차 차량 모델 (Kenney 승용차 몇 종, 한 번만 로드) -----
+  let carModels: Array<{ m: MergedModel; scale: number; yOff: number }> | null = null;
+  const carWaiters: Array<() => void> = [];
+  void (async () => {
+    const base = `${import.meta.env.BASE_URL}models/kenney/`;
+    const defs: Array<[string, number]> = [
+      ['sedan', 4.2],
+      ['suv', 4.4],
+      ['hatchback-sports', 3.9],
+      ['van', 4.6],
+      ['sedan-sports', 4.3],
+    ];
+    const loaded = await Promise.all(defs.map(async ([name, len]) => {
+      const m = await loadMerged(`${base}${name}.glb`);
+      if (!m) return null;
+      m.geometry.computeBoundingBox();
+      const bb = m.geometry.boundingBox!;
+      const scale = len / (bb.max.z - bb.min.z || 1);
+      return { m, scale, yOff: -bb.min.y * scale };
+    }));
+    carModels = loaded.filter((c): c is NonNullable<typeof c> => !!c);
+    for (const w of carWaiters) w();
+    carWaiters.length = 0;
   })();
 
   const tiles = new Map<string, TileScene>();
@@ -680,6 +754,8 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
     const obstacles: Obstacle[] = [];
     const walks: TileScene['walks'] = [];
     const busStops: BusStop[] = [];
+    const counts: Record<string, number> = {};
+    const count = (k: string, n = 1) => (counts[k] = (counts[k] ?? 0) + n);
     const disposables: Array<{ dispose(): void }> = [];
     const addMesh = (geo: THREE.BufferGeometry, mat: THREE.Material | THREE.Material[], shadow = false): THREE.Mesh => {
       const m = new THREE.Mesh(geo, mat);
@@ -860,6 +936,8 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
       tb: number;
     }
     const chains: Chain[] = [];
+    /** 체인마다 중앙분리대 쪽(반대편 차도가 나란히 있는 쪽). 인도·보행로·띠녹지를 두지 않는다 */
+    const medianSides = new Map<Chain, Set<number>>();
     {
       const cand = new Map<number, Edge>();
       for (const e of edges) if (isFlat(e) && hasCurb(e.rank)) cand.set(e.id, e);
@@ -1055,23 +1133,64 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
         } else trench(tunnelB, maskB, path.pts, path.ys!, e.half);
       }
       // 인도: 체인마다 연석(0.12m) 위 보도블록, 교차로에서는 물러난다
+      const medianB = new GeoBuilder();
+      const medianGrassB = new GeoBuilder();
+      const medianHedgeB = new GeoBuilder();
       for (const ch of chains) {
         const pts = slicePolyline(ch.pts, ch.ta, ch.len - ch.tb);
         if (pts.length < 4) continue;
-        // 상·하행이 따로 그려진 대로의 안쪽은 반대편 차로 위일 수 있다. 세 지점이 다른 길의 노면 안이면 그 쪽 인도는 뺀다
+        // 상·하행이 따로 그려진 대로: 같은 방향으로 나란한 반대편 차도가 16m 안에 있으면 그 쪽은 '중앙분리대 쪽'이다.
+        // 인도·보행로·띠녹지를 빼고, 틈을 연석 위 잔디·화단의 중앙분리대로 채운다 (한 쪽 체인에서만)
         const W = walkWidth(ch.rank);
         const cum = cumOf(pts);
-        const sides = [-1, 1].filter((side) => {
-          const off = offsetPolyline(pts, side * (ch.half + 0.3 + W * 0.5));
+        const sides: number[] = [];
+        const medSides = new Set<number>();
+        for (const side of [-1, 1]) {
+          let twin: { e: Edge; gap: number } | null = null;
           for (const t of [0.2, 0.5, 0.8]) {
-            const [px, pz] = ptAt(off.pts, cum, cum[cum.length - 1] * t);
-            const near = g.nearestEdge(px, pz, 16);
-            if (near && !ch.parts.some((p) => p.e.id === near.e.id) && near.d < near.e.half + 0.6) return false;
+            const [cx, cz] = ptAt(pts, cum, cum[cum.length - 1] * t);
+            const q = g.nearestEdge(cx, cz, 8);
+            if (!q) continue;
+            const p = g.pointAt(q.e, 1, q.s);
+            const [rx, rz] = rightOf(p.hx, p.hz);
+            for (const probe of [ch.half + 2.5, ch.half + 7, ch.half + 13]) {
+              const near = g.nearestEdge(cx + rx * side * probe, cz + rz * side * probe, 9);
+              if (!near || ch.parts.some((pp) => pp.e.id === near.e.id) || !isFlat(near.e) || near.e.rank > 4) continue;
+              const np = g.pointAt(near.e, 1, near.s);
+              if (Math.abs(np.hx * p.hx + np.hz * p.hz) < 0.8) continue; // 나란하지 않은 길(교차하는 길)은 아니다
+              const D = distToPolyline(near.e.pts, cx, cz);
+              const gap = D - ch.half - near.e.half - 0.6;
+              if (gap < -1 || gap > 16) continue;
+              twin = { e: near.e, gap };
+              break;
+            }
+            if (twin) break;
           }
-          return true;
-        });
+          if (!twin) {
+            sides.push(side);
+            continue;
+          }
+          medSides.add(side);
+          const gap = twin.gap;
+          if (gap >= 0.9 && ch.rank <= 4 && ch.parts[0].e.id < twin.e.id) {
+            const mw = Math.min(gap - 0.4, 14);
+            const centreOff = offsetPolyline(slicePolyline(ch.pts, ch.ta + 6, ch.len - ch.tb - 6), side * (ch.half + 0.3 + gap / 2));
+            if (centreOff.pts.length >= 4) {
+              extrudeStrip(medianB, centreOff.pts, mw / 2, 0, 0.18);
+              if (mw >= 1.4) {
+                extrudeStrip(medianGrassB, centreOff.pts, mw / 2 - 0.25, 0.18, 0.21);
+                extrudeStrip(medianHedgeB, centreOff.pts, Math.min(0.6, mw / 2 - 0.4), 0.2, 0.8);
+              }
+              count('median');
+            }
+          } else count('medianSkipped');
+        }
+        if (medSides.size) medianSides.set(ch, medSides);
         if (sides.length) sidewalk(sb, curbB, pts, ch.half + 0.3, ch.half + W, CURB_H, sides);
       }
+      if (!medianB.empty) addMesh(medianB.build(), curbMat);
+      if (!medianGrassB.empty) addMesh(medianGrassB.build(), fieldMat);
+      if (!medianHedgeB.empty) addMesh(medianHedgeB.build(), hedgeMat, true);
       // 교차로 모서리: 이 타일이 가진 노드만. 이웃 타일이 아직 없어 길이 빠져 있을 수 있는 경계 노드는 미룬다
       {
         const own: Node[] = [];
@@ -1132,6 +1251,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
         const base = slicePolyline(ch.pts, ch.ta, ch.len - ch.tb);
         if (base.length < 4) continue;
         for (const side of [-1, 1]) {
+          if (medianSides.get(ch)?.has(side)) continue;
           // 가로수·가로등은 연석 쪽, 사람은 건물 쪽으로 걷는다
           const off = offsetPolyline(base, side * (ch.half + 3.2));
           const cum = cumOf(off.pts);
@@ -1280,8 +1400,8 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
       addInstanced(unitPlane, barMat, bars);
       addInstanced(bollardGeo, bollardMat, bollards, undefined, true);
 
-      // 신호 교차로 진입 차선마다 바닥 화살표: 맨 오른쪽 우회전, 맨 왼쪽 좌회전(또는 직진), 가운데 직진
-      const arrows: Record<keyof typeof arrowMats, Placement[]> = { straight: [], left: [], right: [], straightRight: [] };
+      // 신호 교차로 진입 차선마다 바닥 화살표: 그 교차로에서 실제로 갈 수 있는 방향(laneRoles)대로. 교통 AI 도 같은 규칙으로 차선을 고른다
+      const arrows = Object.fromEntries(arrowKinds.map((k) => [k, [] as Placement[]])) as Record<ArrowKind, Placement[]>;
       for (const [n] of tile.nodes) {
         if (!isSignal(n)) continue;
         for (const e of g.edgesAt(n)) {
@@ -1289,17 +1409,52 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
           if (!g.canTravel(e, dir) || e.rank > 4) continue;
           const lanes = g.lanes(e, dir);
           const cut = g.cut(e, n);
-          const p = g.pointAt(e, dir, Math.max(0, e.len - cut - 9));
-          const [rx, rz] = rightOf(p.hx, p.hz);
-          const yaw = Math.atan2(p.hx, p.hz);
-          for (let lane = 0; lane < lanes; lane++) {
-            const lat = g.laneOffset(e, dir, lane);
-            const kind: keyof typeof arrowMats = lanes === 1 ? 'straight' : lane === lanes - 1 ? (lanes >= 3 ? 'right' : 'straightRight') : lane === 0 ? 'left' : 'straight';
-            arrows[kind].push({ x: p.x + rx * lat, y: p.y + 0.037, z: p.z + rz * lat, yaw, w: 1.0, h: 1, d: 2.5 });
+          const roles = laneRoles(g, e, dir).roles;
+          const [rx, rz] = rightOf(g.pointAt(e, dir, Math.max(0, e.len - cut - 9)).hx, g.pointAt(e, dir, Math.max(0, e.len - cut - 9)).hz);
+          // 교차로 앞 9m 와 24m 두 곳 (간선이 길면)
+          for (const back of e.len - cut > 40 ? [9, 24] : [9]) {
+            const p = g.pointAt(e, dir, Math.max(0, e.len - cut - back));
+            const yaw = Math.atan2(p.hx, p.hz);
+            for (let lane = 0; lane < lanes; lane++) {
+              const lat = g.laneOffset(e, dir, lane);
+              arrows[roles[lane] ?? 'straight'].push({ x: p.x + rx * lat, y: p.y + 0.037, z: p.z + rz * lat, yaw, w: 1.0, h: 1, d: 2.5 });
+            }
           }
         }
       }
-      for (const k of Object.keys(arrows) as Array<keyof typeof arrowMats>) addInstanced(unitPlane, arrowMats[k], arrows[k]);
+      for (const k of arrowKinds) addInstanced(unitPlane, arrowMats[k], arrows[k]);
+
+      // 버스전용차로: 중앙(1차로) 또는 가로변(바깥 차로)을 파랗게 칠하고 60m 마다 '버스전용'
+      {
+        const bb = new GeoBuilder();
+        const texts: Placement[] = [];
+        for (const e of edges) {
+          if (!e.busLane || !isFlat(e)) continue;
+          for (const dir of (e.lb > 0 ? [1, -1] : [1]) as Array<1 | -1>) {
+            const lanes = g.lanes(e, dir);
+            if (lanes < 2) continue;
+            const lane = e.busLane === 'median' ? 0 : lanes - 1;
+            const lat = g.laneOffset(e, dir, lane);
+            const s0 = g.cut(e, dir === 1 ? e.a : e.b) + 1;
+            const s1 = e.len - g.cut(e, dir === 1 ? e.b : e.a) - 1;
+            if (s1 - s0 < 8) continue;
+            const pts: number[] = [];
+            for (let s = s0; s <= s1 + 0.01; s += Math.min(12, s1 - s0)) {
+              const p = g.pointAt(e, dir, Math.min(s, s1));
+              const [rx, rz] = rightOf(p.hx, p.hz);
+              pts.push(p.x + rx * lat, p.z + rz * lat);
+            }
+            ribbon(bb, pts, e.laneW / 2 - 0.22, 0.028, 8);
+            for (let s = s0 + 14; s < s1 - 6; s += 60) {
+              const p = g.pointAt(e, dir, s);
+              const [rx, rz] = rightOf(p.hx, p.hz);
+              texts.push({ x: p.x + rx * lat, y: 0.033, z: p.z + rz * lat, yaw: Math.atan2(p.hx, p.hz), w: 1.5, h: 1, d: 4.5 });
+            }
+          }
+        }
+        if (!bb.empty) addMesh(bb.build(), busLaneMat).receiveShadow = false;
+        addInstanced(unitPlane, busTextMat, texts);
+      }
       // 맨홀: 큰길 60m 마다 하나, 차선 하나에 무작위
       const manholes: Placement[] = [];
       for (const e of edges) {
@@ -1326,6 +1481,11 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
       return b;
     };
     const roofB = new GeoBuilder();
+    const fieldB = new GeoBuilder();
+    const standB = new GeoBuilder();
+    const crownB = new GeoBuilder();
+    const domes: Placement[] = [];
+    const spires: Placement[] = [];
     const beacons: Placement[] = [];
     const signLists: Placement[][] = Array.from({ length: SIGN_VARIANTS }, () => []);
     const billLists: Placement[][] = Array.from({ length: BILL_VARIANTS }, () => []);
@@ -1363,13 +1523,70 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
       let longest = -1;
       let longestLen = 0;
       const nearBig = commercial && (g.nearestEdge(ccx, ccz, 60)?.e.rank ?? 9) <= 3;
-      // 랜드마크급 초고층(180m 이상): 위로 갈수록 좁아지는 유리 타워 + 첨탑. 롯데월드타워처럼 400m 넘으면 더 가늘게
+      const scaled = (s: number) => ring.map((v, i) => (i % 2 === 0 ? ccx + (v - ccx) * s : ccz + (v - ccz) * s));
+      /** 고리 두 개 사이 벽 (r0 가 y0, r1 이 y1). 바깥을 향한 법선 */
+      const wallBetween = (b: GeoBuilder, r0: number[], y0: number, r1: number[], y1: number, uScale = 32, vScale = 48) => {
+        let c2 = 0;
+        for (let i = 0; i < n; i++) {
+          const j = (i + 1) % n;
+          const len = Math.hypot(r0[j * 2] - r0[i * 2], r0[j * 2 + 1] - r0[i * 2 + 1]);
+          if (len < 0.2) continue;
+          let nx = (r0[j * 2 + 1] - r0[i * 2 + 1]) / len;
+          let nz = -(r0[j * 2] - r0[i * 2]) / len;
+          if (nx * ((r0[i * 2] + r0[j * 2]) / 2 - ccx) + nz * ((r0[i * 2 + 1] + r0[j * 2 + 1]) / 2 - ccz) < 0) {
+            nx = -nx;
+            nz = -nz;
+          }
+          const cross = (r0[j * 2] - r0[i * 2]) * nz - (r0[j * 2 + 1] - r0[i * 2 + 1]) * nx;
+          const ua = c2 / uScale;
+          const ub = (c2 + len) / uScale;
+          const a = b.vertex(r0[i * 2], y0, r0[i * 2 + 1], nx, 0, nz, cross > 0 ? ua : ub, y0 / vScale);
+          const c = b.vertex(r0[j * 2], y0, r0[j * 2 + 1], nx, 0, nz, cross > 0 ? ub : ua, y0 / vScale);
+          const d = b.vertex(r1[j * 2], y1, r1[j * 2 + 1], nx, 0, nz, cross > 0 ? ub : ua, y1 / vScale);
+          const e = b.vertex(r1[i * 2], y1, r1[i * 2 + 1], nx, 0, nz, cross > 0 ? ua : ub, y1 / vScale);
+          if (cross > 0) b.quad(a, c, d, e);
+          else b.quad(c, a, e, d);
+          c2 += len;
+        }
+      };
+      // ----- 랜드마크 전용 모델 (이름으로 알아본다) -----
+      // 경기장(잠실주경기장·야구장): 바깥 스탠드 벽 + 안쪽으로 기운 지붕 링 + 푸른 필드
+      if (/주경기장|야구장/.test(bd.name) && n >= 60) {
+        const H = /야구장/.test(bd.name) ? 22 : 30;
+        const inner = scaled(0.62);
+        const mid = scaled(0.82);
+        wallBetween(builderFor(office), ring, 0, ring, H * 0.85);
+        wallBetween(builderFor(office), ring, H * 0.85, mid, H);
+        ringBand(roofB, mid, inner, H);
+        // 스탠드 안쪽 경사면 (지붕 안쪽 가장자리에서 필드로). 안쪽을 보니 양면 재질
+        wallBetween(standB, inner, H, scaled(0.5), 2.5);
+        flatPolygon(fieldB, scaled(0.5), 0.3, 10);
+        beacons.push({ x: ccx, y: H + 0.6, z: ccz, yaw: 0, w: 1, h: 1 });
+        return;
+      }
+      // 실내체육관: 낮은 벽 위에 돔
+      if (/실내체육관/.test(bd.name) && n >= 12) {
+        const [bx0, bx1, bz0, bz1] = ringBounds(ring);
+        wallBetween(builderFor(office), ring, 0, ring, 10);
+        flatPolygon(roofB, ring, 10, 6);
+        domes.push({ x: ccx, y: 10, z: ccz, yaw: 0, w: (bx1 - bx0) * 0.46, h: 14, d: (bz1 - bz0) * 0.46 });
+        return;
+      }
+      // 롯데월드 매직아일랜드 성: 작은 성채 건물이면 꼭짓점마다 뾰족탑
+      if (bd.name === '롯데월드' && n <= 20 && ringAreaAbs(ring) < 2500) {
+        const wb0 = builderFor(brick1);
+        wallBetween(wb0, ring, 0, ring, bd.h + 4, 16, 16);
+        flatPolygon(roofB, ring, bd.h + 4, 6);
+        for (let i = 0; i < n; i += 2) spires.push({ x: ring[i * 2], y: bd.h + 4, z: ring[i * 2 + 1], yaw: 0, w: 2.6, h: 9, d: 2.6 });
+        spires.push({ x: ccx, y: bd.h + 4, z: ccz, yaw: 0, w: 5, h: 22, d: 5 });
+        return;
+      }
+      // 랜드마크급 초고층(180m 이상): 위로 갈수록 좁아지는 유리 타워 + 첨탑. 롯데월드타워처럼 400m 넘으면 더 가늘고 매끈하게, 꼭대기엔 크라운
       if (bd.h > 180 && n <= 30 && (bd.kind === 'tower' || bd.h > 300)) {
-        const K = bd.h > 350 ? 8 : 5;
-        const topScale = bd.h > 350 ? 0.36 : 0.68;
-        const scaleAt = (t: number) => 1 - (1 - topScale) * Math.pow(t, 1.3);
+        const K = bd.h > 350 ? 16 : 5;
+        const topScale = bd.h > 350 ? 0.3 : 0.68;
+        const scaleAt = (t: number) => 1 - (1 - topScale) * Math.pow(t, bd.h > 350 ? 1.08 : 1.3);
         const tb = builderFor(glass1);
-        const scaled = (s: number) => ring.map((v, i) => (i % 2 === 0 ? ccx + (v - ccx) * s : ccz + (v - ccz) * s));
         for (let k = 0; k < K; k++) {
           const y0 = (bd.h * k) / K;
           const y1 = (bd.h * (k + 1)) / K;
@@ -1400,8 +1617,16 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
         }
         flatPolygon(roofB, scaled(topScale), bd.h, 6);
         const spire = bd.h * (bd.h > 350 ? 0.1 : 0.07);
-        billFrames.push({ x: ccx, y: bd.h + spire / 2, z: ccz, yaw: 0, w: bd.h > 350 ? 2.2 : 1.2, h: spire, d: bd.h > 350 ? 2.2 : 1.2 });
-        beacons.push({ x: ccx, y: bd.h + spire + 0.6, z: ccz, yaw: 0, w: 1, h: 1 });
+        if (bd.h > 350) {
+          // 크라운: 꼭대기 위에 조금 더 좁아지는 밝은 띠 (랜턴) 와 가는 첨탑
+          wallBetween(crownB, scaled(topScale), bd.h, scaled(topScale * 0.72), bd.h + 14, 32, 48);
+          flatPolygon(crownB, scaled(topScale * 0.72), bd.h + 14, 6);
+          billFrames.push({ x: ccx, y: bd.h + 14 + spire / 2, z: ccz, yaw: 0, w: 1.6, h: spire, d: 1.6 });
+          beacons.push({ x: ccx, y: bd.h + 14 + spire + 0.6, z: ccz, yaw: 0, w: 1, h: 1 });
+        } else {
+          billFrames.push({ x: ccx, y: bd.h + spire / 2, z: ccz, yaw: 0, w: 1.2, h: spire, d: 1.2 });
+          beacons.push({ x: ccx, y: bd.h + spire + 0.6, z: ccz, yaw: 0, w: 1, h: 1 });
+        }
         return;
       }
       const wb = builderFor(wall);
@@ -1508,6 +1733,11 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
       yield 'walls';
     }
     if (!roofB.empty) addMesh(roofB.build(), roofMat);
+    if (!fieldB.empty) addMesh(fieldB.build(), fieldMat);
+    if (!standB.empty) addMesh(standB.build(), standMat);
+    if (!crownB.empty) addMesh(crownB.build(), crownMat, true);
+    addInstanced(domeGeo, domeMat, domes, undefined, true);
+    addInstanced(coneGeo, spireMat, spires, undefined, true);
     addInstanced(beaconGeo, beaconMat, beacons);
     signLists.forEach((list, v) => addInstanced(plane, signMats[v], list));
     billLists.forEach((list, v) => addInstanced(plane, billMats[v], list));
@@ -1526,6 +1756,12 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
         const [rx, rz] = rightOf(hx, hz);
         const yaw = Math.atan2(hx, hz);
         shelters.push({ x, y: y + 2.6, z, yaw, w: 4.2, h: 0.12, d: 1.6 });
+        // 정류장에서 기다리는 사람: 대기소 뒤 3m 짧은 길을 서성인다. 쓰레기통 하나
+        const wx0 = x - hx * 1.5 + rx * side * 0.9;
+        const wz0 = z - hz * 1.5 + rz * side * 0.9;
+        const wpts = [wx0, wz0, wx0 + hx * 3, wz0 + hz * 3];
+        walks.push({ pts: wpts, nrm: [rx * side, rz * side, rx * side, rz * side], cum: [0, 3], len: 3, y, crowd: 2.5 });
+        trash.push({ x: x + hx * 2.7, y: y + 0.42, z: z + hz * 2.7, yaw, w: 1, h: 1 });
         glass.push({ x: x + rx * side * 0.7, y: y + 1.35, z: z + rz * side * 0.7, yaw, w: 4.0, h: 2.4, d: 0.06 });
         signs.push({ x: x - hx * 2.4, y: y + 2.2, z: z - hz * 2.4, yaw: yaw + Math.PI / 2, w: 0.9, h: 0.5, d: 0.08 });
         for (const dx of [-1.9, 1.9]) {
@@ -1542,6 +1778,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
         hedgeGaps.set(e.id, l);
         busStops.push({ key: `${e.id}:${Math.round(s)}:${side}`, edge: e.id, s, side, x, z });
       };
+      const trash: Placement[] = [];
       const stops = (tile.pois ?? []).filter((p) => p.kind === 'bus_stop');
       if (stops.length) {
         for (const st of stops) {
@@ -1576,6 +1813,32 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
       addInstanced(unitBox, shelterMat, shelters);
       addInstanced(unitBox, shelterGlassMat, glass);
       addInstanced(unitBox, shelterSignMat, signs);
+      // 거리 소품: 큰길 인도에 90m 마다 쓰레기통(연석 쪽), 160m 마다 변압기함(건물 쪽)
+      const boxes: Placement[] = [];
+      for (const ch of chains) {
+        if (ch.maxRank > 3 || ch.link) continue;
+        for (let s = ch.ta + 30; s < ch.len - ch.tb - 10; s += 90) {
+          const [px, pz] = ptAt(ch.pts, cumOf(ch.pts), s);
+          const q = g.nearestEdge(px, pz, 8);
+          if (!q) continue;
+          const p = g.pointAt(q.e, 1, q.s);
+          const [rx, rz] = rightOf(p.hx, p.hz);
+          const side = rand() < 0.5 ? 1 : -1;
+          const tx = p.x + rx * side * (ch.half + 1.9);
+          const tz = p.z + rz * side * (ch.half + 1.9);
+          if (!inBuilding(tx, tz)) trash.push({ x: tx, y: CURB_H + 0.42, z: tz, yaw: 0, w: 1, h: 1 });
+          if (Math.round(s / 90) % 2 === 0) {
+            const bx = p.x + rx * side * (ch.half + 3.9);
+            const bz = p.z + rz * side * (ch.half + 3.9);
+            if (!inBuilding(bx, bz)) {
+              boxes.push({ x: bx, y: CURB_H + 0.65, z: bz, yaw: Math.atan2(p.hx, p.hz), w: 1.2, h: 1.3, d: 0.8 });
+              obstacles.push({ x: bx, z: bz, r: 0.6 });
+            }
+          }
+        }
+      }
+      addInstanced(trashGeo, trashMat, trash, undefined, true);
+      addInstanced(unitBox, utilityBoxMat, boxes, undefined, true);
     }
 
     // ----- 띠녹지: 큰길 체인의 연석 안쪽을 따라가는 낮은 울타리 띠. 교차로·정류장·건물·다른 길 위는 비운다 -----
@@ -1590,6 +1853,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
         const s1 = ch.len - ch.tb - 6;
         if (s1 - s0 < 6) continue;
         for (const side of [-1, 1]) {
+          if (medianSides.get(ch)?.has(side)) continue;
           const off = offsetPolyline(ch.pts, side * (ch.half + 0.75));
           const cum = cumOf(off.pts);
           // 상·하행이 따로 그려진 대로의 안쪽은 옆 차로 위일 수 있다. 세 지점만 보고 그 쪽 전체를 뺀다
@@ -1630,6 +1894,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
     {
       const subwayByName = new Map<string, Placement[]>();
       const posts: Placement[] = [];
+      const subwayPits: Array<{ x: number; z: number; hx: number; hz: number; side: number; y: number }> = [];
       const signIndex = new Map<string, number>();
       const entries: Array<[string, string]> = [];
       const signPlacements: Array<Placement & { cell: number }> = [];
@@ -1652,6 +1917,18 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
           subwayByName.set(name, list);
           posts.push({ x, y: y + 1.6, z, yaw: 0, w: 0.1, h: 3.2, d: 0.1 });
           obstacles.push({ x, z, r: 0.1 });
+          // 출입구 구조물: 인도 위 계단 구멍(스텐실) + 옹벽·계단·난간 + 유리 캐노피. 큰길 인도에만 (폭 4.5m 안에 들어간다)
+          if (poi.kind === 'subway_entrance' && isFlat(hit.e) && hasCurb(hit.e.rank) && walkWidth(hit.e.rank) >= 4 && !hit.e.link) {
+            count('subwayCandidate');
+            const hx = p.hx;
+            const hz = p.hz;
+            const cx = p.x + rx * side * (hit.e.half + 2.75) + hx * 3.5;
+            const cz = p.z + rz * side * (hit.e.half + 2.75) + hz * 3.5;
+            if (!inBuilding(cx, cz) && !inBuilding(cx + hx * 2.5, cz + hz * 2.5) && !inBuilding(cx - hx * 2.5, cz - hz * 2.5)) {
+              subwayPits.push({ x: cx, z: cz, hx, hz, side, y });
+              count('subway');
+            } else count('subwayBlocked');
+          } else if (poi.kind === 'subway_entrance') count('subwaySkipped');
           continue;
         }
         if ((poi.kind !== 'shop' && poi.kind !== 'amenity' && poi.kind !== 'tourism') || !poi.name || signPlacements.length >= 420) continue;
@@ -1718,6 +1995,78 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
       }
       for (const [name, list] of subwayByName) addInstanced(plane, subwayMat(name), list);
       addInstanced(unitBox, poleMat, posts);
+      // 지하철 출입구: 길 방향으로 긴 2.2×5m 계단 구멍. 계단은 길 뒤쪽(진행 반대)에서 앞으로 내려간다
+      if (subwayPits.length) {
+        const pitB = new GeoBuilder();
+        const maskB2 = new GeoBuilder();
+        const steps: Placement[] = [];
+        const rails: Placement[] = [];
+        const postsC: Placement[] = [];
+        const roofs: Placement[] = [];
+        const HW = 1.1;
+        const HL = 2.5;
+        const DEPTH = 3.4;
+        for (const pit of subwayPits) {
+          const { x, z, hx, hz, y } = pit;
+          const [rx, rz] = rightOf(hx, hz);
+          const yaw = Math.atan2(hx, hz);
+          const corner = (a: number, s: number) => [x + hx * a + rx * s, z + hz * a + rz * s] as const;
+          // 구멍 (스텐실) — 지면·인도·연석이 이 자리에서 비워진다
+          const [ax, az] = corner(-HL, -HW);
+          const [bx, bz] = corner(-HL, HW);
+          const [cx2, cz2] = corner(HL, HW);
+          const [dx2, dz2] = corner(HL, -HW);
+          const m0 = maskB2.vertex(ax, 0, az, 0, 1, 0);
+          const m1 = maskB2.vertex(bx, 0, bz, 0, 1, 0);
+          const m2 = maskB2.vertex(cx2, 0, cz2, 0, 1, 0);
+          const m3 = maskB2.vertex(dx2, 0, dz2, 0, 1, 0);
+          maskB2.quad(m0, m1, m2, m3);
+          maskB2.quad(m3, m2, m1, m0);
+          // 옹벽 4면 (안쪽을 향한 법선) + 바닥
+          const walls: Array<[readonly [number, number], readonly [number, number], number, number]> = [
+            [corner(-HL, -HW), corner(HL, -HW), rx, rz],
+            [corner(HL, HW), corner(-HL, HW), -rx, -rz],
+            [corner(HL, -HW), corner(HL, HW), -hx, -hz],
+            [corner(-HL, HW), corner(-HL, -HW), hx, hz],
+          ];
+          for (const [[x0, z0], [x1, z1], nx, nz] of walls) {
+            const a = pitB.vertex(x0, y + 0.13, z0, nx, 0, nz, 0, 0);
+            const b = pitB.vertex(x1, y + 0.13, z1, nx, 0, nz, 1, 0);
+            const c = pitB.vertex(x1, -DEPTH, z1, nx, 0, nz, 1, 1);
+            const d = pitB.vertex(x0, -DEPTH, z0, nx, 0, nz, 0, 1);
+            pitB.quad(a, b, c, d);
+            pitB.quad(d, c, b, a);
+          }
+          const f0 = pitB.vertex(ax, -DEPTH, az, 0, 1, 0, 0, 0);
+          const f1 = pitB.vertex(bx, -DEPTH, bz, 0, 1, 0, 1, 0);
+          const f2 = pitB.vertex(cx2, -DEPTH, cz2, 0, 1, 0, 1, 1);
+          const f3 = pitB.vertex(dx2, -DEPTH, dz2, 0, 1, 0, 0, 1);
+          pitB.quad(f0, f1, f2, f3);
+          pitB.quad(f3, f2, f1, f0);
+          // 계단 9단: 뒤쪽 입구(a=-HL)에서 앞으로 내려간다
+          const N = 9;
+          for (let k = 0; k < N; k++) {
+            const a = -HL + (k + 0.5) * ((2 * HL) / N);
+            const top = y + 0.12 - ((k + 1) * (DEPTH + y + 0.12)) / N;
+            steps.push({ x: x + hx * a, y: (top - DEPTH) / 2, z: z + hz * a, yaw, w: HW * 2 - 0.1, h: Math.max(0.05, top + DEPTH), d: (2 * HL) / N });
+          }
+          // 난간 (양쪽 0.95m), 캐노피 기둥 4개와 유리 지붕
+          for (const s of [-HW - 0.08, HW + 0.08]) rails.push({ x: x + rx * s, y: y + 0.95, z: z + rz * s, yaw, w: 0.08, h: 0.06, d: HL * 2 + 0.3 });
+          for (const s of [-HW - 0.08, HW + 0.08]) for (const a of [-HL + 0.15, 0, HL - 0.15]) rails.push({ x: x + hx * a + rx * s, y: y + 0.5, z: z + hz * a + rz * s, yaw, w: 0.06, h: 1.0, d: 0.06 });
+          for (const s of [-HW - 0.5, HW + 0.5]) for (const a of [-HL - 0.3, HL + 0.3]) postsC.push({ x: x + hx * a + rx * s, y: y + 1.35, z: z + hz * a + rz * s, yaw, w: 0.12, h: 2.7, d: 0.12 });
+          roofs.push({ x, y: y + 2.75, z, yaw, w: HW * 2 + 1.4, h: 0.1, d: HL * 2 + 1.0 });
+          for (const s of [-HW - 0.4, HW + 0.4]) for (const a of [-HL - 0.3, HL + 0.3]) obstacles.push({ x: x + hx * a + rx * s, z: z + hz * a + rz * s, r: 0.25 });
+          obstacles.push({ x, z, r: 1.2 }, { x: x + hx * 1.6, z: z + hz * 1.6, r: 1.1 }, { x: x - hx * 1.6, z: z - hz * 1.6, r: 1.1 });
+        }
+        const mm = addMesh(maskB2.build(), maskMat);
+        mm.renderOrder = -2;
+        mm.receiveShadow = false;
+        addMesh(pitB.build(), tunnelMat);
+        addInstanced(unitBox, deckMat, steps);
+        addInstanced(unitBox, bollardMat, rails);
+        addInstanced(unitBox, poleMat, postsC);
+        addInstanced(unitBox, shelterGlassMat, roofs);
+      }
     }
     yield 'signs';
 
@@ -1821,6 +2170,51 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
     else treeWaiters.push(() => tiles.has(key) && placeTrees());
     yield 'placetrees';
 
+    // ----- 길가 주차 차량: 동네길·골목(5~6등급) 한쪽 가장자리에 9m 마다 절반 확률 -----
+    const parked: Array<{ x: number; z: number; yaw: number; y: number }> = [];
+    for (const e of edges) {
+      if (e.rank < 5 || !isFlat(e) || e.link || e.len < 30 || e.lf + e.lb > 2) continue;
+      const side = rand() < 0.5 ? 1 : -1;
+      const flip = rand() < 0.5;
+      for (let s = 12 + rand() * 6; s < e.len - 12; s += 9) {
+        if (rand() > 0.5) continue;
+        const p = g.pointAt(e, 1, s);
+        const [rx, rz] = rightOf(p.hx, p.hz);
+        const x = p.x + rx * side * (e.half + 0.55);
+        const z = p.z + rz * side * (e.half + 0.55);
+        if (inBuilding(x, z) || inBuilding(x + rx * side * 1.2, z + rz * side * 1.2)) continue;
+        const near = g.nearestEdge(x, z, 10);
+        if (near && near.e.id !== e.id && near.d < near.e.half + 1.5) continue;
+        parked.push({ x, z, yaw: Math.atan2(p.hx, p.hz) + (flip ? Math.PI : 0), y: 0.012 });
+        count('parked');
+        obstacles.push({ x: x + p.hx * 1.1, z: z + p.hz * 1.1, r: 0.95 }, { x: x - p.hx * 1.1, z: z - p.hz * 1.1, r: 0.95 });
+      }
+    }
+    const placeCars = () => {
+      if (!carModels?.length || !parked.length) return;
+      const buckets = carModels.map(() => [] as typeof parked);
+      parked.forEach((c, i) => buckets[Math.abs(i * 7 + Math.floor(c.x)) % carModels!.length].push(c));
+      carModels.forEach((cm, k) => {
+        const list = buckets[k];
+        if (!list.length) return;
+        const mesh = new THREE.InstancedMesh(cm.m.geometry, cm.m.materials, list.length);
+        list.forEach((c, i) => {
+          dummy.position.set(c.x, c.y + cm.yOff, c.z);
+          dummy.rotation.set(0, c.yaw, 0);
+          dummy.scale.setScalar(cm.scale);
+          dummy.updateMatrix();
+          mesh.setMatrixAt(i, dummy.matrix);
+        });
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(1, 1, 1);
+        mesh.castShadow = true;
+        group.add(mesh);
+      });
+    };
+    if (carModels) placeCars();
+    else carWaiters.push(() => tiles.has(key) && placeCars());
+    yield 'parked';
+
     // ----- 가로등: 큰길(1~3등급)은 양쪽 45m, 동네 간선(4등급)은 한쪽 55m. 골목엔 없다 -----
     {
       const lamps: Array<{ x: number; y: number; z: number; dx: number; dz: number }> = [];
@@ -1866,6 +2260,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
       obstacles,
       walks,
       stops: busStops,
+      counts,
       dispose() {
         scene.remove(group);
         group.traverse((o) => {
