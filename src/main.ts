@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 import './style.css';
 import { createTraffic } from './ai/traffic.ts';
 import { createAudio, type EngineAudio } from './audio.ts';
@@ -19,6 +20,9 @@ import { createGarage } from './ui/garage.ts';
 import { placeName } from './game/places.ts';
 import { createHud } from './ui/hud.ts';
 import { createMinimap, type MapPoint } from './ui/minimap.ts';
+import { createPerf } from './ui/perf.ts';
+import { warmShaders } from './render/warmup.ts';
+import { loadModel, MODELS } from './vehicle/models.ts';
 import { createPlayer } from './vehicle/player.ts';
 import { CARS, computeStats, emptyParts, partsLevel, type CarSpec, type CarStats } from './vehicle/stats.ts';
 import { createCity, type TileScene } from './world/city.ts';
@@ -89,6 +93,7 @@ const tiles = createTileManager(index, graph, {
 goBtn.textContent = '주변 거리를 만드는 중…';
 await tiles.warmup(index.start.x, index.start.z);
 const player = createPlayer(scene, graph);
+const perf = createPerf(stage.renderer);
 const bigmap = createBigMap(document.getElementById('bigmap') as HTMLElement, graph, (x, z) => placeName(graph, graph.nearestNode(x, z)));
 document.getElementById('mapwrap')!.addEventListener('click', () => bigmap.toggle());
 const chase = createChaseCamera(camera, (x, z, r, y) => world.push({ x, z, r, y }, false));
@@ -205,6 +210,12 @@ const garage = createGarage(document.getElementById('garage') as HTMLElement, {
   onClose: () => run.resume(),
 });
 hud.setBest(save.best);
+// 셰이더 미리 컴파일: 처음 나타나는 재질(물리 도장 차, 지하철 표지, 경기장 …)마다 수십~수백 ms 멈추는 것을 시작 화면에서 미리 치른다
+goBtn.textContent = '그래픽 준비 중…';
+{
+  const models = (await Promise.all(Object.keys(MODELS).map((id) => loadModel(id)))).filter((m): m is THREE.Group => !!m);
+  await warmShaders(stage, [...city.warmMaterials(), { mat: pedestrians.material, inst: true, instColor: true }], models);
+}
 goBtn.disabled = false;
 goBtn.textContent = '출발';
 
@@ -239,6 +250,7 @@ input.on('fx', () => {
 input.on('cancel', () => missions.cancel());
 input.on('weather', () => weather.toggle());
 input.on('map', () => bigmap.toggle());
+input.on('perf', () => perf.toggle());
 input.on('time', () => {
   daylight.skip(4);
   toast(`시간 ${daylight.label}`, '', 1);
@@ -305,7 +317,8 @@ if (import.meta.env.DEV) {
 // ----- 루프 -----
 let last = performance.now();
 function frame(now: number): void {
-  const dt = Math.min(0.05, (now - last) / 1000);
+  const rawDt = (now - last) / 1000;
+  const dt = Math.min(0.05, rawDt);
   last = now;
   const t = now / 1000;
   const S = player.S;
@@ -419,6 +432,7 @@ function frame(now: number): void {
     camera.updateProjectionMatrix();
   }
   stage.render(dt);
+  perf.frame(now, rawDt, { tilesLoaded: tiles.loaded.size, tilesLoading: tiles.loading, building: tiles.building, detailed: tiles.detailed.size, profile: tiles.profile, npcs: traffic.npcs.length, peds: pedestrians.stats().total });
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

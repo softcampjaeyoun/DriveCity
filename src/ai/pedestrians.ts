@@ -15,6 +15,8 @@ export interface Pedestrians {
   setNight(night: number): void;
   /** 디버그: 전체 보행자, 횡단보도 위, 신호 대기 중 수 */
   stats(): { total: number; crossing: number; standing: number };
+  /** 셰이더 미리 컴파일용 (인스턴스 색을 쓰는 인스턴스 메시) */
+  readonly material: THREE.Material;
   /** 승하차 연출: (x0,z0) 에서 (x1,z1) 로 걸어가 사라지는 사람 count 명 (버스 정류장 ↔ 버스 문) */
   transit(x0: number, z0: number, x1: number, z1: number, count: number, y?: number): void;
 }
@@ -219,6 +221,7 @@ export function createPedestrians(scene: THREE.Scene, sig: WalkSignals, density 
   }
 
   return {
+    material: mat,
     addTile(key, ts) {
       if (tiles.has(key) || !ts.walks.length) return;
       const rand = mulberry32(key.length * 31 + key.charCodeAt(0) * 7 + 11);

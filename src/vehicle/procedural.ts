@@ -59,9 +59,8 @@ export function buildTaxi(hex: number, length = 4.4, width = 1.9): THREE.Group {
   sign.position.set(0, 1.62, -0.1);
   const base = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.06, 0.2), dark);
   base.position.set(0, 1.52, -0.1);
-  const lamp = new THREE.PointLight(0xffe68a, 0.5, 4);
-  lamp.position.set(0, 1.8, -0.1);
-  g.add(sign, base, lamp);
+  // 갓등은 발광 재질만 (점광원을 달면 조명 개수가 바뀔 때마다 모든 셰이더가 재컴파일된다)
+  g.add(sign, base);
   return g;
 }
 

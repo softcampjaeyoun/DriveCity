@@ -135,8 +135,10 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
       blue.position.set(0.45, 1.68, -0.2);
       const bar = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.12, 0.42), new THREE.MeshLambertMaterial({ color: 0x15171c }));
       bar.position.set(0, 1.56, -0.2);
-      const glow = new THREE.PointLight(0xff4a4a, 0, 14);
-      glow.position.set(0, 2.2, 0);
+      // 경광등 번짐: 점광원 대신 바닥의 가산 혼합 원판. 장면의 조명 개수가 바뀌면 three.js 가 모든 셰이더를 다시 컴파일해
+      // (NPC 가 생기고 사라질 때마다) 수백 ms 멈추기 때문에, NPC 에는 실제 조명을 절대 달지 않는다
+      const glow = new THREE.Mesh(policeGlowGeo, new THREE.MeshBasicMaterial({ map: policeGlowTex, color: 0xff3a3a, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending }));
+      glow.position.set(0, 0.06, 0);
       glow.name = 'policeGlow';
       mesh.add(bar, red, blue, glow);
       red.visible = blue.visible = false;
@@ -158,6 +160,8 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
   const headGlowGeo = new THREE.PlaneGeometry(3.2, 8).rotateX(-Math.PI / 2);
   const tailGlowGeo = new THREE.PlaneGeometry(2.4, 2.4).rotateX(-Math.PI / 2);
   const headGlowMat = new THREE.MeshBasicMaterial({ map: glowTexture('rgba(255,240,200,0.55)'), transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
+  const policeGlowTex = glowTexture('rgba(255,255,255,0.9)');
+  const policeGlowGeo = new THREE.PlaneGeometry(14, 14).rotateX(-Math.PI / 2);
   const tailTex = glowTexture('rgba(255,80,80,0.6)');
   let nightK = 1;
 
@@ -715,19 +719,20 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
 
         if (n.police) {
           const p = n.police;
-          const glow = n.mesh.getObjectByName('policeGlow') as THREE.PointLight | undefined;
+          const glow = n.mesh.getObjectByName('policeGlow') as THREE.Mesh | undefined;
+          const glowMat = glow?.material as THREE.MeshBasicMaterial | undefined;
           if (p.chasing) {
             p.blink += dt * 8;
             const phase = Math.floor(p.blink) % 2 === 0;
             p.lights[0].visible = phase;
             p.lights[1].visible = !phase;
-            if (glow) {
-              glow.intensity = 1.6;
-              glow.color.setHex(phase ? 0xff3a3a : 0x3a6bff);
+            if (glowMat) {
+              glowMat.opacity = 0.55 + 0.35 * nightK;
+              glowMat.color.setHex(phase ? 0xff3a3a : 0x3a6bff);
             }
           } else {
             p.lights[0].visible = p.lights[1].visible = false;
-            if (glow) glow.intensity = 0;
+            if (glowMat) glowMat.opacity = 0;
           }
         }
       }

@@ -73,6 +73,18 @@ export interface City {
   setWet(wet: boolean): void;
   /** 0 낮 .. 1 밤. 재질 색과 창문·가로등·네온 밝기를 바꾼다 */
   setNight(night: number): void;
+  /** 셰이더 미리 컴파일용: 도시가 쓰는 재질 전부와 쓰이는 꼴(인스턴스, 인스턴스 색, 꼭짓점 색, 점) */
+  warmMaterials(): WarmMaterial[];
+}
+
+export interface WarmMaterial {
+  mat: THREE.Material;
+  /** InstancedMesh 로도 그린다 */
+  inst?: boolean;
+  /** 인스턴스 색(instanceColor)을 쓴다 */
+  instColor?: boolean;
+  /** Points 로 그린다 */
+  points?: boolean;
 }
 
 const STORE_H = 3.6;
@@ -2651,6 +2663,24 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
 
   return {
     buildTile,
+    warmMaterials() {
+      const both = (mat: THREE.Material): WarmMaterial[] => [{ mat }, { mat, inst: true }];
+      return [
+        { mat: groundMat }, { mat: backdropMat }, { mat: waterMat }, { mat: parkMat }, { mat: railMat }, { mat: grassMat }, { mat: fieldMat }, { mat: standMat },
+        ...both(roadMat), { mat: walkMat }, { mat: curbMat }, { mat: hedgeMat }, { mat: deckMat, inst: true }, { mat: deckMat }, { mat: tunnelMat }, { mat: bridgeRailMat, inst: true },
+        { mat: maskMat }, { mat: maskMat, inst: true }, { mat: yellowMat, inst: true }, { mat: whiteMat, inst: true }, { mat: barMat, inst: true },
+        ...Object.values(arrowMats).map((m) => ({ mat: m, inst: true })), { mat: busLaneMat }, { mat: busTextMat, inst: true },
+        { mat: grateMat, inst: true }, { mat: bollardMat, inst: true }, { mat: lensMat, inst: true }, { mat: poolMat, inst: true }, { mat: haloMat, points: true },
+        { mat: poleMat, inst: true }, { mat: beaconMat, inst: true }, { mat: frameMat, inst: true }, { mat: hvacMat, inst: true }, { mat: tankMat, inst: true },
+        { mat: shelterMat, inst: true }, { mat: shelterGlassMat, inst: true }, { mat: shelterSignMat, inst: true }, { mat: manholeMat, inst: true },
+        { mat: trashMat, inst: true }, { mat: utilityBoxMat, inst: true }, { mat: domeMat, inst: true }, { mat: spireMat, inst: true }, { mat: crownMat },
+        { mat: roofMat }, { mat: parapetMat }, { mat: awningMat, inst: true, instColor: true },
+        ...allWalls.map((m) => ({ mat: m })), ...signMats.map((m) => ({ mat: m, inst: true })), ...billMats.map((m) => ({ mat: m, inst: true })),
+        ...dongMats.map((m) => ({ mat: m, inst: true })), { mat: subwayMat('워밍업'), inst: true }, { mat: streetSignMat('워밍업'), inst: true },
+        { mat: treeSet.barkMat, inst: true }, ...treeSet.leafMats.map((m) => ({ mat: m, inst: true })),
+        ...(carModels ?? []).flatMap((c) => c.m.materials.map((m) => ({ mat: m, inst: true }))),
+      ];
+    },
     removeTile(key) {
       const t = tiles.get(key);
       if (!t) return;
