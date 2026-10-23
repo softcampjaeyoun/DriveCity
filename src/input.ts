@@ -9,7 +9,7 @@ export interface Input {
 
 export const IDLE: Readonly<Input> = { up: false, down: false, left: false, right: false, hb: false, nitro: false };
 
-export type Action = 'reset' | 'camera' | 'mute' | 'battle' | 'garage' | 'start' | 'escape' | 'radio' | 'fx' | 'cancel' | 'weather' | 'time' | 'map' | 'perf';
+export type Action = 'reset' | 'camera' | 'mute' | 'battle' | 'garage' | 'start' | 'escape' | 'radio' | 'fx' | 'cancel' | 'weather' | 'time' | 'map' | 'perf' | 'quality';
 const KEY_ACTIONS: Record<string, Action> = {
   KeyR: 'reset',
   KeyC: 'camera',
@@ -22,6 +22,7 @@ const KEY_ACTIONS: Record<string, Action> = {
   KeyK: 'weather',
   KeyT: 'time',
   KeyP: 'perf',
+  KeyQ: 'quality',
   Tab: 'map',
   Enter: 'start',
   Escape: 'escape',

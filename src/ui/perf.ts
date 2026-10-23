@@ -14,6 +14,9 @@ export interface PerfInfo {
   profile: ReadonlyArray<[string, number]>;
   npcs: number;
   peds: number;
+  /** 이번 프레임 JS 처리 시간(ms, 렌더 제출 포함). 프레임 시간보다 훨씬 짧으면 GPU 가 병목 */
+  jsMs: number;
+  quality: string;
 }
 export interface Perf {
   toggle(): void;
@@ -88,6 +91,7 @@ export function createPerf(renderer: THREE.WebGLRenderer): Perf {
       el.textContent = [
         `프레임 ${fmt(ms)}ms  평균 ${fmt(avg)}  p95 ${fmt(p95)}  최악(5s) ${fmt(worst)}   fps ${(1000 / avg).toFixed(0)}`,
         `그리기 호출 ${r.calls}  삼각형 ${(r.triangles / 1000).toFixed(0)}k  프로그램 ${programs}  지오메트리 ${renderer.info.memory.geometries}  텍스처 ${renderer.info.memory.textures}`,
+        `JS ${fmt(info.jsMs)}ms (프레임의 ${Math.round((100 * info.jsMs) / Math.max(1, ms))}% — 낮으면 GPU 병목)  품질 ${info.quality}`,
         `타일 ${info.tilesLoaded} (상세 ${info.detailed}, 받는 중 ${info.tilesLoading}, 만드는 중 ${info.building ?? '-'})  NPC ${info.npcs}  보행자 ${info.peds}  힙 ${mem()}`,
         '',
         `긴 프레임(>${HITCH_MS}ms) 최근:`,

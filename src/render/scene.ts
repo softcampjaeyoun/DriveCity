@@ -36,6 +36,11 @@ export interface Stage {
   setAoDebug(mode: 'off' | 'ao' | 'denoise' | 'normal' | 'depth'): void;
   /** 디버그: 패스 켜고 끄기 */
   passes: { gtao: GTAOPass; bloom: UnrealBloomPass; grade: ShaderPass };
+  /** 품질 단계: 픽셀 비율·AO·블룸·그림자 해상도 */
+  setQuality(q: Quality): void;
+  readonly quality: Quality;
+  /** 그림자 해상도를 바꿀 때 daylight 가 등록해 둔 콜백 */
+  onShadowSize?: (size: number) => void;
   readonly bloom: boolean;
 }
 
@@ -70,10 +75,19 @@ const GradeShader = {
     }`,
 };
 
+export type Quality = 'high' | 'medium' | 'low';
+/** 단계별 설정. medium 이 1080p 내장 GPU 기준, low 는 노트북·구형 */
+export const QUALITY: Record<Quality, { pixelRatio: number; shadow: number; gtao: boolean; gtaoSamples: number; bloom: boolean; label: string }> = {
+  high: { pixelRatio: 2, shadow: 4096, gtao: true, gtaoSamples: 16, bloom: true, label: '높음' },
+  medium: { pixelRatio: 1.25, shadow: 2048, gtao: true, gtaoSamples: 8, bloom: true, label: '중간' },
+  low: { pixelRatio: 1, shadow: 1024, gtao: false, gtaoSamples: 8, bloom: false, label: '낮음' },
+};
+
 export function createStage(canvas: HTMLCanvasElement): Stage {
   // stencil: 지하차도 트인 구간이 바닥 평면에 구멍을 내는 데 쓴다 (city.ts 의 maskMat/groundMat)
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, stencil: true });
-  const pixelRatio = Math.min(devicePixelRatio || 1, 2);
+  let quality: Quality = 'high';
+  let pixelRatio = Math.min(devicePixelRatio || 1, QUALITY[quality].pixelRatio);
   renderer.setPixelRatio(pixelRatio);
   // 필름 톤매핑은 OutputPass 에서 적용된다 (렌더타깃에 그릴 땐 재질 셰이더가 톤매핑을 하지 않는다)
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -90,7 +104,8 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
   const sky = new Sky();
   sky.name = 'sky';
   sky.scale.setScalar(2000);
-  sky.renderOrder = -10;
+  // 불투명한 것들 다음에 그린다 (깊이 검사로 건물에 가린 하늘 픽셀은 구름 fbm 을 돌리지 않는다)
+  sky.renderOrder = 50;
   sky.frustumCulled = false;
   const su = sky.material.uniforms;
   // 하늘 밝기: 대기 산란 출력이 노출에 비해 너무 밝아 하얗게 날아가므로 셰이더 끝에서 skyGain 을 곱한다 (환경맵도 같은 재질이라 같이 줄어든다)
@@ -118,7 +133,7 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
   });
   const nightSky = new THREE.Mesh(new THREE.SphereGeometry(1900, 24, 12), nightMat);
   nightSky.name = 'nightSky';
-  nightSky.renderOrder = -9;
+  nightSky.renderOrder = 51;
   nightSky.frustumCulled = false;
   scene.add(nightSky);
 
@@ -178,6 +193,7 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
   let bloom = true;
 
   const resize = () => {
+    renderer.setPixelRatio(pixelRatio);
     renderer.setSize(innerWidth, innerHeight, false);
     composer.setSize(innerWidth, innerHeight);
     bloomPass.setSize(innerWidth, innerHeight);
@@ -208,8 +224,8 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
     },
     setBloom(on) {
       bloom = on;
-      bloomPass.enabled = on;
-      gtao.enabled = on;
+      bloomPass.enabled = on && QUALITY[quality].bloom;
+      gtao.enabled = on && QUALITY[quality].gtao;
     },
     setBloomStrength(v) {
       bloomPass.strength = v;
@@ -251,5 +267,19 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
       gtao.output = { off: GTAOPass.OUTPUT.Default, ao: GTAOPass.OUTPUT.AO, denoise: GTAOPass.OUTPUT.Denoise, normal: GTAOPass.OUTPUT.Normal, depth: GTAOPass.OUTPUT.Depth }[mode];
     },
     passes: { gtao, bloom: bloomPass, grade },
+    get quality() {
+      return quality;
+    },
+    setQuality(q) {
+      quality = q;
+      const cfg = QUALITY[q];
+      pixelRatio = Math.min(devicePixelRatio || 1, cfg.pixelRatio);
+      gtao.enabled = bloom && cfg.gtao;
+      bloomPass.enabled = bloom && cfg.bloom;
+      gtao.updateGtaoMaterial({ samples: cfg.gtaoSamples });
+      gtao.updatePdMaterial({ samples: cfg.gtaoSamples });
+      this.onShadowSize?.(cfg.shadow);
+      resize();
+    },
   };
 }

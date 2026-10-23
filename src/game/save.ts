@@ -10,6 +10,8 @@ export interface CarSave {
 export interface Settings {
   /** 블룸 등 화면 효과 */
   fx: boolean;
+  /** 'auto' 면 프레임 시간을 보고 자동으로 낮춘다 */
+  quality?: 'auto' | 'high' | 'medium' | 'low';
   /** 0 = 끔, 1.. = 방송국 */
   radio: number;
 }

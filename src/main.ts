@@ -14,7 +14,7 @@ import { CHASE_PACE, createWanted } from './game/wanted.ts';
 import { IDLE, createInput } from './input.ts';
 import { createRadio, type Radio } from './radio.ts';
 import { createDaylight } from './render/daylight.ts';
-import { createStage } from './render/scene.ts';
+import { createStage, QUALITY, type Quality } from './render/scene.ts';
 import { createWeather } from './render/weather.ts';
 import { createBigMap } from './ui/bigmap.ts';
 import { createGarage } from './ui/garage.ts';
@@ -261,6 +261,24 @@ input.on('cancel', () => {
 input.on('weather', () => weather.toggle());
 input.on('map', () => bigmap.toggle());
 input.on('perf', () => perf.toggle());
+// 품질: Q 로 자동 → 높음 → 중간 → 낮음 순환. 자동은 프레임 시간이 느리면 한 단계씩 내린다 (올리지는 않는다)
+const QUALITY_ORDER: Array<'auto' | Quality> = ['auto', 'high', 'medium', 'low'];
+let autoLevel: Quality = 'high';
+let slowTime = 0;
+let qualityTimer = 0;
+const applyQuality = (announce: boolean) => {
+  const q = save.settings.quality ?? 'auto';
+  const level: Quality = q === 'auto' ? autoLevel : q;
+  if (stage.quality !== level) stage.setQuality(level);
+  if (announce) toast(`그래픽 품질: ${q === 'auto' ? `자동 (${QUALITY[level].label})` : QUALITY[level].label}`, 'Q 로 바꿔요', 1.4);
+};
+input.on('quality', () => {
+  const cur = save.settings.quality ?? 'auto';
+  save.settings.quality = QUALITY_ORDER[(QUALITY_ORDER.indexOf(cur) + 1) % QUALITY_ORDER.length];
+  persist();
+  applyQuality(true);
+});
+applyQuality(false);
 input.on('time', () => {
   daylight.skip(4);
   toast(`시간 ${daylight.label}`, '', 1);
@@ -447,7 +465,21 @@ function frame(now: number): void {
     camera.updateProjectionMatrix();
   }
   stage.render(dt);
-  perf.frame(now, rawDt, { tilesLoaded: tiles.loaded.size, tilesLoading: tiles.loading, building: tiles.building, detailed: tiles.detailed.size, profile: tiles.profile, npcs: traffic.npcs.length, peds: pedestrians.stats().total });
+  const jsMs = performance.now() - now;
+  // 자동 품질: 2초 평균 프레임이 26ms 를 넘으면 한 단계 낮춘다 (시작 직후 5초는 제외)
+  if ((save.settings.quality ?? 'auto') === 'auto' && started) {
+    qualityTimer += rawDt;
+    if (rawDt > 0.026) slowTime += rawDt;
+    if (qualityTimer > 2) {
+      if (slowTime > 1.2 && autoLevel !== 'low') {
+        autoLevel = autoLevel === 'high' ? 'medium' : 'low';
+        applyQuality(true);
+      }
+      qualityTimer = 0;
+      slowTime = 0;
+    }
+  }
+  perf.frame(now, rawDt, { tilesLoaded: tiles.loaded.size, tilesLoading: tiles.loading, building: tiles.building, detailed: tiles.detailed.size, profile: tiles.profile, npcs: traffic.npcs.length, peds: pedestrians.stats().total, jsMs, quality: `${save.settings.quality ?? 'auto'}/${stage.quality}` });
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

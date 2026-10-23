@@ -28,6 +28,13 @@ export function createDaylight(stage: Stage, onNight: (night: number) => void, s
   const sun = new THREE.DirectionalLight(0xfff2dc, 0);
   sun.castShadow = true;
   sun.shadow.mapSize.set(4096, 4096);
+  // 품질 단계가 바뀌면 그림자맵을 다시 만든다
+  stage.onShadowSize = (size) => {
+    if (sun.shadow.mapSize.x === size) return;
+    sun.shadow.mapSize.set(size, size);
+    sun.shadow.map?.dispose();
+    sun.shadow.map = null;
+  };
   sun.shadow.camera.left = -SHADOW_RANGE;
   sun.shadow.camera.right = SHADOW_RANGE;
   sun.shadow.camera.top = SHADOW_RANGE;
