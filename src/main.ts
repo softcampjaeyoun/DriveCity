@@ -21,6 +21,7 @@ import { placeName } from './game/places.ts';
 import { createHud } from './ui/hud.ts';
 import { createMinimap, type MapPoint } from './ui/minimap.ts';
 import { createPerf } from './ui/perf.ts';
+import { buildFacadeLib } from './render/facades.ts';
 import { warmShaders } from './render/warmup.ts';
 import { loadModel, MODELS } from './vehicle/models.ts';
 import { createPlayer } from './vehicle/player.ts';
@@ -53,7 +54,9 @@ const index = await loadIndex();
 const terrain = createTerrain(index);
 const graph = createGraph(index, terrain);
 const signals = createSignals(scene, graph);
-const city = createCity(scene, index, stage.renderer, terrain);
+goBtn.textContent = '건물 외벽을 만드는 중…';
+const facadeLib = await buildFacadeLib();
+const city = createCity(scene, index, stage.renderer, terrain, facadeLib);
 const farTiles = createFarTiles(scene, index, terrain);
 const world = createCollisionWorld(graph);
 const minimap = createMinimap(document.getElementById('minimap') as HTMLCanvasElement, graph);
@@ -331,7 +334,7 @@ function frame(now: number): void {
     player.reset();
     toast('한강에 빠졌어요', '가까운 길로 돌아왔어요', 2);
   }
-  player.applyVisual(r, inp, dt);
+  player.applyVisual(r, inp, dt, camera);
   signals.update(t);
   const playerNode = graph.nearestNode(S.x, S.z);
   traffic.update(dt, S, (n) => battle.racePace(n, S), CHASE_PACE[wanted.stars]);
@@ -411,6 +414,7 @@ function frame(now: number): void {
     carName: carSpec.name,
     carLv,
     maxKmh: carStats.nitroVmax * 3.6,
+    rush: Math.max(0, Math.min(1, (Math.abs(r.vf) / carStats.vmax - 0.55) / 0.45)) * (r.boosting ? 1 : 0.6),
     road: roadName,
     place: placeLabel,
     status: started ? `${daylight.label} · ${weather.raining ? '비' : '맑음'} · 라디오 ${radio?.name ?? '꺼짐'} · 효과 ${stage.bloom ? '켬' : '끔'} · 타일 ${tiles.loaded.size}(상세 ${tiles.detailed.size})${tiles.loading ? ` (+${tiles.loading} 받는 중)` : ''}` : '',

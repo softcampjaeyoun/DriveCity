@@ -88,10 +88,10 @@ export function createDaylight(stage: Stage, onNight: (night: number) => void, s
       sun.position.set(px + dirX * 400, dirY * 400, pz + dirZ * 400);
       sun.target.position.set(px, 0, pz);
       // ACES 톤매핑 기준 세기. 하늘빛 간접광은 환경맵이 대고, 반구광은 그 보조
-      sun.intensity = Math.max(0, elev) * (raining ? 0.6 : 2.2);
+      sun.intensity = Math.max(0, elev) * (raining ? 0.6 : 2.5);
       sun.castShadow = elev > 0.05;
-      mix(sun.color, 0xffc48a, 0xfff4e6, clamp(elev / 0.4, 0, 1));
-      stage.hemi.intensity = lerp(raining ? 0.5 : 0.32, 3.0, night);
+      mix(sun.color, 0xffc48a, 0xfff0d6, clamp(elev / 0.4, 0, 1));
+      stage.hemi.intensity = lerp(raining ? 0.5 : 0.45, 3.0, night);
       mix(stage.hemi.color, raining ? 0x8c9ab0 : 0xbcc8dc, 0x6f80cf, night);
       mix(stage.hemi.groundColor, 0x9c917c, 0x2c2419, night);
       stage.moon.intensity = 1.6 * night;
@@ -102,15 +102,15 @@ export function createDaylight(stage: Stage, onNight: (night: number) => void, s
       // 하늘·안개·구름
       // 밤 하늘: 톤매핑·sRGB 를 거치므로 예전 상수보다 밝게 잡아야 비슷하게 보인다
       mix(top, raining ? 0x6a7890 : 0x3f7fd6, 0x0c1024, night);
-      mix(horizon, raining ? 0x9aa6b6 : 0xbfcddf, 0x2b2650, night);
+      mix(horizon, raining ? 0x9aa6b6 : 0xd3dde6, 0x2b2650, night);
       horizon.lerp(new THREE.Color(0xf0a060), dusk * 0.55 * (raining ? 0.3 : 1));
       top.lerp(new THREE.Color(0x6c5a8a), dusk * 0.35);
       stage.setSky(top, horizon);
       fog.color.copy(horizon);
       bg.copy(horizon);
-      fog.density = lerp(0.0011, 0.0034, night) * (raining ? 2.2 : 1);
+      fog.density = lerp(0.0015, 0.0034, night) * (raining ? 2.2 : 1);
       stage.setBloomStrength(lerp(0.04, 0.45, night));
-      stage.setExposure(lerp(0.76, 1.9, night));
+      stage.setExposure(lerp(0.9, 1.9, night));
       clouds.position.set(px, 650, pz);
       cloudTex.offset.x += dt * 0.0015;
       clouds.visible = raining;

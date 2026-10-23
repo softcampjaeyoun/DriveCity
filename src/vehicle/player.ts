@@ -8,6 +8,7 @@ import type { RoadGraph } from '../world/graph.ts';
 import { swapModel } from './models.ts';
 import type { CarStats } from './stats.ts';
 import { createSkids } from './skids.ts';
+import { createSmoke } from './smoke.ts';
 
 export interface PlayerState {
   x: number;
@@ -41,7 +42,7 @@ export interface Player {
   driftScore: number;
   driftTimer: number;
   step(dt: number, inp: Input, stats: CarStats, world: CollisionWorld, after: () => void): StepResult;
-  applyVisual(r: StepResult, inp: Input, dt: number): void;
+  applyVisual(r: StepResult, inp: Input, dt: number, camera?: THREE.Camera): void;
   setPaint(hex: string): void;
   setGlow(hex: string): void;
   setFlash(v: number): void;
@@ -76,6 +77,8 @@ export function createPlayer(scene: THREE.Scene, g: RoadGraph): Player {
     }
   }
   const skids = createSkids(scene);
+  const smoke = createSmoke(scene);
+  let smokeAcc = 0;
 
   // ----- 모델 -----
   const group = new THREE.Group();
@@ -263,6 +266,12 @@ export function createPlayer(scene: THREE.Scene, g: RoadGraph): Player {
         player.driftScore += Math.abs(vl) * dt * 10;
         player.driftTimer = 0.6;
         for (const side of [-0.95, 0.95]) skids.add(S.x - fx * 1.35 + lx * side, S.z - fz * 1.35 + lz * side, S.h, S.y);
+        smokeAcc += dt * 40;
+        while (smokeAcc > 1) {
+          smokeAcc -= 1;
+          const side = Math.random() < 0.5 ? -0.95 : 0.95;
+          smoke.emit(S.x - fx * 1.35 + lx * side, S.y, S.z - fz * 1.35 + lz * side, -S.vx * 0.3, -S.vz * 0.3);
+        }
       } else {
         S.nitro = Math.min(1, S.nitro + dt * 0.02);
         player.driftTimer -= dt;
@@ -272,7 +281,8 @@ export function createPlayer(scene: THREE.Scene, g: RoadGraph): Player {
       return { vf, vl, boosting, drifting };
     },
 
-    applyVisual(r, inp, dt) {
+    applyVisual(r, inp, dt, camera) {
+      if (camera) smoke.update(dt, camera);
       group.position.set(S.x, S.y, S.z);
       group.rotation.y = S.h;
       group.rotation.x = -S.pitch;

@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { mulberry32 } from '../util/math.ts';
-import { aptTextures, arrowTexture, billboardTexture, busLaneTexture, dongTexture, facadeSet, loadMerged, loadTex, shopNameAtlas, signTexture, storefrontTextures, streetSignTexture, subwaySignTexture, SUB_KO, type ArrowKind, type MergedModel } from '../render/assets.ts';
+import { arrowTexture, billboardTexture, busLaneTexture, dongTexture, facadeSet, loadMerged, loadTex, shopNameAtlas, signTexture, streetSignTexture, subwaySignTexture, SUB_KO, wallRepeat, type ArrowKind, type MergedModel } from '../render/assets.ts';
+import { vSignTexture, type FacadeLib } from '../render/facades.ts';
 import { withGrime, withParkMask } from '../render/materials.ts';
 import { buildTreeSet, hedgeTexture } from '../render/trees.ts';
 import { glowTexture, windowTexture } from '../render/textures.ts';
@@ -312,6 +313,16 @@ function cumOf(pts: number[]): number[] {
   for (let i = 2; i < pts.length; i += 2) cum.push(cum[cum.length - 1] + Math.hypot(pts[i] - pts[i - 2], pts[i + 1] - pts[i - 1]));
   return cum;
 }
+/** 폴리라인 위 호 길이 s 의 진행 방향 (정규화) */
+function p0(pts: number[], s: number): { hx: number; hz: number } {
+  let cum = 0;
+  for (let i = 0; i + 3 < pts.length; i += 2) {
+    const l = Math.hypot(pts[i + 2] - pts[i], pts[i + 3] - pts[i + 1]);
+    if (cum + l >= s || i + 4 >= pts.length) return { hx: (pts[i + 2] - pts[i]) / (l || 1), hz: (pts[i + 3] - pts[i + 1]) / (l || 1) };
+    cum += l;
+  }
+  return { hx: 1, hz: 0 };
+}
 /** 폴리라인 위 호 길이 s 의 점 */
 function ptAt(pts: number[], cum: number[], s: number): [number, number] {
   const n = cum.length;
@@ -450,7 +461,8 @@ function deckBody(b: GeoBuilder, pts: number[], ys: number[], half: number): voi
  * 지하차도: 노면이 지면 아래로 내려간 곳에 양쪽 옹벽, 4.5m 보다 깊으면 천장(-1m)으로 덮는다.
  * mask 에는 트인 구간을 지면 높이로 넣어 바닥 평면에 스텐실 구멍을 낸다
  */
-function trench(b: GeoBuilder, mask: GeoBuilder, pts: number[], ys: number[], half: number): void {
+/** ys 는 절대 노면 높이(지형 포함), lvs 는 지형 제외 레벨(지하차도 깊이). 트임·덮임 판단은 lvs 로, 꼭짓점 높이는 ys 와 지형(ys - lvs)으로 */
+function trench(b: GeoBuilder, mask: GeoBuilder, pts: number[], ys: number[], lvs: number[], half: number): void {
   const n = pts.length / 2;
   if (n < 2) return;
   const nrm = sideNormals(pts);
@@ -462,8 +474,10 @@ function trench(b: GeoBuilder, mask: GeoBuilder, pts: number[], ys: number[], ha
   const covered = (y: number) => y < COVER;
   const topOf = (y: number) => (covered(y) ? CEIL : 0.5);
   for (let i = 0; i < n - 1; i++) {
-    const y0 = ys[i];
-    const y1 = ys[i + 1];
+    const y0 = lvs[i];
+    const y1 = lvs[i + 1];
+    const g0 = ys[i] - lvs[i];
+    const g1 = ys[i + 1] - lvs[i + 1];
     if (y0 > OPEN && y1 > OPEN) continue;
     const corners = (k: number, off: number) => {
       const nx = nrm[k * 2];
@@ -472,44 +486,46 @@ function trench(b: GeoBuilder, mask: GeoBuilder, pts: number[], ys: number[], ha
     };
     const [lx0, lz0, rx0, rz0, nx0, nz0] = corners(i, wo);
     const [lx1, lz1, rx1, rz1, nx1, nz1] = corners(i + 1, wo);
-    const t0 = topOf(y0);
-    const t1 = topOf(y1);
-    // 옹벽 (안쪽을 향한 법선)
-    const lf0 = b.vertex(lx0, y0, lz0, nx0, 0, nz0, 0, y0);
-    const lf1 = b.vertex(lx1, y1, lz1, nx1, 0, nz1, 1, y1);
-    const lt0 = b.vertex(lx0, t0, lz0, nx0, 0, nz0, 0, t0);
-    const lt1 = b.vertex(lx1, t1, lz1, nx1, 0, nz1, 1, t1);
+    const t0 = g0 + topOf(y0);
+    const t1 = g1 + topOf(y1);
+    const seg = Math.hypot(lx1 - lx0, lz1 - lz0) / 2.5;
+    // 옹벽 (안쪽을 향한 법선). uv: 가로 2.5m 마다 한 장, 세로 m/2.5
+    const lf0 = b.vertex(lx0, ys[i], lz0, nx0, 0, nz0, 0, ys[i] / 2.5);
+    const lf1 = b.vertex(lx1, ys[i + 1], lz1, nx1, 0, nz1, seg, ys[i + 1] / 2.5);
+    const lt0 = b.vertex(lx0, t0, lz0, nx0, 0, nz0, 0, t0 / 2.5);
+    const lt1 = b.vertex(lx1, t1, lz1, nx1, 0, nz1, seg, t1 / 2.5);
     b.quad(lf0, lf1, lt1, lt0);
-    const rf0 = b.vertex(rx0, y0, rz0, -nx0, 0, -nz0, 0, y0);
-    const rf1 = b.vertex(rx1, y1, rz1, -nx1, 0, -nz1, 1, y1);
-    const rt0 = b.vertex(rx0, t0, rz0, -nx0, 0, -nz0, 0, t0);
-    const rt1 = b.vertex(rx1, t1, rz1, -nx1, 0, -nz1, 1, t1);
+    const rf0 = b.vertex(rx0, ys[i], rz0, -nx0, 0, -nz0, 0, ys[i] / 2.5);
+    const rf1 = b.vertex(rx1, ys[i + 1], rz1, -nx1, 0, -nz1, seg, ys[i + 1] / 2.5);
+    const rt0 = b.vertex(rx0, t0, rz0, -nx0, 0, -nz0, 0, t0 / 2.5);
+    const rt1 = b.vertex(rx1, t1, rz1, -nx1, 0, -nz1, seg, t1 / 2.5);
     b.quad(rt0, rt1, rf1, rf0);
     if (covered(y0) && covered(y1)) {
       // 천장 (아래를 향한 법선)
-      const a = b.vertex(lx0, CEIL, lz0, 0, -1, 0, 0, 0);
-      const c = b.vertex(rx0, CEIL, rz0, 0, -1, 0, 1, 0);
-      const d = b.vertex(rx1, CEIL, rz1, 0, -1, 0, 1, 1);
-      const e = b.vertex(lx1, CEIL, lz1, 0, -1, 0, 0, 1);
+      const a = b.vertex(lx0, g0 + CEIL, lz0, 0, -1, 0, 0, 0);
+      const c = b.vertex(rx0, g0 + CEIL, rz0, 0, -1, 0, (wo * 2) / 2.5, 0);
+      const d = b.vertex(rx1, g1 + CEIL, rz1, 0, -1, 0, (wo * 2) / 2.5, seg);
+      const e = b.vertex(lx1, g1 + CEIL, lz1, 0, -1, 0, 0, seg);
       b.quad(a, c, d, e);
     } else if (covered(y0) !== covered(y1)) {
       // 터널 입구 상인방: 천장 높이에서 지면 위 0.5m 까지 가로막
       const k = covered(y1) ? i + 1 : i;
+      const gk = covered(y1) ? g1 : g0;
       const [lx, lz, rx, rz] = corners(k, wo);
-      const a = b.vertex(lx, CEIL, lz, 0, 0, 1, 0, 0);
-      const c = b.vertex(rx, CEIL, rz, 0, 0, 1, 1, 0);
-      const d = b.vertex(rx, 0.5, rz, 0, 0, 1, 1, 1);
-      const e = b.vertex(lx, 0.5, lz, 0, 0, 1, 0, 1);
+      const a = b.vertex(lx, gk + CEIL, lz, 0, 0, 1, 0, 0);
+      const c = b.vertex(rx, gk + CEIL, rz, 0, 0, 1, (wo * 2) / 2.5, 0);
+      const d = b.vertex(rx, gk + 0.5, rz, 0, 0, 1, (wo * 2) / 2.5, 0.6);
+      const e = b.vertex(lx, gk + 0.5, lz, 0, 0, 1, 0, 0.6);
       b.quad(a, c, d, e);
     }
     if (!covered(y0) || !covered(y1)) {
-      // 트인 구간: 바닥 평면 구멍
+      // 트인 구간: 바닥 평면 구멍 (스텐실은 깊이 검사를 안 하므로 높이는 무관)
       const [mlx0, mlz0, mrx0, mrz0] = corners(i, mo);
       const [mlx1, mlz1, mrx1, mrz1] = corners(i + 1, mo);
-      const a = mask.vertex(mlx0, 0, mlz0, 0, 1, 0);
-      const c = mask.vertex(mrx0, 0, mrz0, 0, 1, 0);
-      const d = mask.vertex(mrx1, 0, mrz1, 0, 1, 0);
-      const e = mask.vertex(mlx1, 0, mlz1, 0, 1, 0);
+      const a = mask.vertex(mlx0, g0, mlz0, 0, 1, 0);
+      const c = mask.vertex(mrx0, g0, mrz0, 0, 1, 0);
+      const d = mask.vertex(mrx1, g1, mrz1, 0, 1, 0);
+      const e = mask.vertex(mlx1, g1, mlz1, 0, 1, 0);
       mask.quad(a, c, d, e);
     }
   }
@@ -676,7 +692,7 @@ function placeInstances(mesh: THREE.InstancedMesh, list: Placement[], dummy: THR
   dummy.scale.set(1, 1, 1);
 }
 
-export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE.WebGLRenderer, terrain?: Terrain): City {
+export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE.WebGLRenderer, terrain?: Terrain, facades?: FacadeLib): City {
   /** 지형 높이 (한강 수면 0). 지형이 없으면 0 */
   const terrainAt = (x: number, z: number): number => (terrain ? terrain.at(x, z) : 0);
   const dummy = new THREE.Object3D();
@@ -728,7 +744,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
   const grassMat = withGrime(new THREE.MeshStandardMaterial({ ...grassSet(), color: 0x9aa684 }), { scale: 30, strength: 0.35, detail: 5 });
   const fieldMat = withGrime(new THREE.MeshStandardMaterial({ ...grassSet(), color: 0xa6bb8e }), { scale: 20, strength: 0.15, detail: 0 });
   const railMat = new THREE.MeshLambertMaterial({ color: 0x23262e, side: THREE.DoubleSide });
-  const roadMat = withGrime(new THREE.MeshStandardMaterial({ map: loadTex('Asphalt033_Color.jpg', true, 1, 1), normalMap: loadTex('Asphalt033_NormalGL.jpg', false, 1, 1), roughnessMap: loadTex('Asphalt033_Roughness.jpg', false, 1, 1), roughness: 1, color: 0x8e9095 }), { scale: 45, strength: 0.38, detail: 6 });
+  const roadMat = withGrime(new THREE.MeshStandardMaterial({ map: loadTex('Asphalt033_Color.jpg', true, 1, 1), normalMap: loadTex('Asphalt033_NormalGL.jpg', false, 1, 1), roughnessMap: loadTex('Asphalt033_Roughness.jpg', false, 1, 1), roughness: 1, color: 0xb6b4ae }), { scale: 45, strength: 0.3, detail: 6 });
   // 인도 보도블록 uv 는 m 단위(2m 마다 한 장). 연석은 화강석, 띠녹지는 회양목 울타리
   // 인도·연석도 스텐실 1(지하철 출입구 계단 구멍)인 곳은 비운다
   const walkMat = withGrime(new THREE.MeshStandardMaterial({ map: loadTex('PavingStones136_Color.jpg', true, 2.5, 2.5), normalMap: loadTex('PavingStones136_NormalGL.jpg', false, 2.5, 2.5), roughnessMap: loadTex('PavingStones136_Roughness.jpg', false, 2.5, 2.5), roughness: 1, color: 0x9f9e98, stencilWrite: true, stencilFunc: THREE.NotEqualStencilFunc, stencilRef: 1 }), { scale: 28, strength: 0.32, detail: 4.5 });
@@ -739,13 +755,17 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
   const lensMat = new THREE.MeshBasicMaterial({ color: 0xffd9a0 });
   // 고가 상판·교각 콘크리트, 지하차도 옹벽·천장
   const deckMat = new THREE.MeshStandardMaterial({ map: loadTex('Concrete034_Color.jpg', true, 1, 1), roughness: 0.95, color: 0x9a9ca2, side: THREE.DoubleSide });
-  const tunnelMat = new THREE.MeshStandardMaterial({ color: 0x61646c, roughness: 0.95, side: THREE.DoubleSide });
+  // 지하차도 옹벽·천장: 타일 사진. 천장 조명은 발광. 방음벽은 베이지 패널, 가드레일은 아연 도금
+  const tunnelMat = withGrime(new THREE.MeshStandardMaterial({ map: loadTex('Tiles133A_Color.jpg', true, 1, 1), normalMap: loadTex('Tiles133A_NormalGL.jpg', false, 1, 1), color: 0xcfd3d6, roughness: 0.55, side: THREE.DoubleSide }), { scale: 14, strength: 0.4, detail: 2.5, baseHeight: 0, baseStrength: 0 });
+  const tunnelLightMat = new THREE.MeshBasicMaterial({ color: 0xfff2d6 });
+  const barrierMat = withGrime(new THREE.MeshStandardMaterial({ map: loadTex('PaintedPlaster017_Color.jpg', true, 1, 1), color: 0xd8cdb4, roughness: 0.9, side: THREE.DoubleSide }), { scale: 20, strength: 0.3, detail: 3 });
+  const guardMat = new THREE.MeshStandardMaterial({ color: 0xc9cdd2, roughness: 0.35, metalness: 0.75 });
   const bridgeRailMat = new THREE.MeshLambertMaterial({ color: 0x8b93a3 });
   // 차선 페인트: 얼룩을 세게 줘 군데군데 닳은 느낌
   const paintGrime = { scale: 18, strength: 0.55, detail: 2.5 };
-  const yellowMat = withGrime(new THREE.MeshStandardMaterial({ color: 0xc9a63d, roughness: 0.75 }), paintGrime);
-  const whiteMat = withGrime(new THREE.MeshStandardMaterial({ color: 0xd6d8d4, roughness: 0.75 }), paintGrime);
-  const barMat = withGrime(new THREE.MeshStandardMaterial({ color: 0xdfe1dd, roughness: 0.75 }), paintGrime);
+  const yellowMat = withGrime(new THREE.MeshStandardMaterial({ color: 0xe0b73a, roughness: 0.7 }), paintGrime);
+  const whiteMat = withGrime(new THREE.MeshStandardMaterial({ color: 0xf0f1ee, roughness: 0.7 }), paintGrime);
+  const barMat = withGrime(new THREE.MeshStandardMaterial({ color: 0xf4f5f2, roughness: 0.7 }), paintGrime);
   const poleMat = new THREE.MeshLambertMaterial({ color: 0x4a4f5a });
   const poolMat = new THREE.MeshBasicMaterial({ map: glowTexture('rgba(255,170,80,0.42)'), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
   const haloMat = new THREE.PointsMaterial({ size: 7, map: glowTexture('rgba(255,190,110,1)'), color: 0xffb35c, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
@@ -760,7 +780,8 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
   const arrowKinds: ArrowKind[] = ['straight', 'left', 'right', 'straightRight', 'straightLeft', 'leftRight'];
   const arrowMats = Object.fromEntries(arrowKinds.map((k) => [k, withGrime(new THREE.MeshBasicMaterial({ map: arrowTexture(k), transparent: true, depthWrite: false, color: 0xd9dbd8 }), paintGrime)])) as Record<ArrowKind, THREE.MeshBasicMaterial>;
   // 버스전용차로 도색(파랑)과 글씨
-  const busLaneMat = withGrime(new THREE.MeshBasicMaterial({ color: 0x3a62a3, transparent: true, opacity: 0.42, depthWrite: false }), { scale: 22, strength: 0.6, detail: 3.5 });
+  // 서울 버스전용차로는 붉은 포장
+  const busLaneMat = withGrime(new THREE.MeshBasicMaterial({ color: 0xa8463c, transparent: true, opacity: 0.55, depthWrite: false }), { scale: 22, strength: 0.5, detail: 3.5 });
   const busTextMat = withGrime(new THREE.MeshBasicMaterial({ map: busLaneTexture(), transparent: true, depthWrite: false, color: 0xd9dbd8 }), paintGrime);
   // 거리 소품: 쓰레기통, 변압기함. 경기장 필드, 돔, 첨탑
   const trashMat = new THREE.MeshStandardMaterial({ color: 0x2f5a3a, roughness: 0.7 });
@@ -811,20 +832,40 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
   const brick2 = stdWall(facadeSet('Facade019A', 12, 14, true), 15);
   const brick3 = stdWall(facadeSet('Facade020A', 12, 14, true), 16);
   const nightOffice = stdWall(facadeSet('Facade013', 16, 18, true), 17, 0.45, 0.1);
-  const aptWalls = [1, 2, 3].map((s) => {
-    const t = aptTextures(s);
+  // 사진 합성 파사드 (render/facades.ts). 벽 UV 규칙(u = m/32, v = m/48)에 맞춰 반복값을 둔다
+  const photoWall = (t: { map: THREE.Texture; emissive: THREE.Texture; tileW: number; tileH: number }, roughness: number, grime = wallGrime) => {
+    const [rx, ry] = wallRepeat(t.tileW, t.tileH);
+    t.map.repeat.set(rx, ry);
+    t.emissive.repeat.set(rx, ry);
+    prewarm(t.map);
+    prewarm(t.emissive);
+    return withGrime(new THREE.MeshStandardMaterial({ map: t.map, emissive: 0xffffff, emissiveMap: t.emissive, emissiveIntensity: 0, roughness, vertexColors: true }), grime);
+  };
+  const lowPhoto = (facades?.low ?? []).map((t) => photoWall(t, 0.8));
+  const blockPhoto = (facades?.block ?? []).map((t) => photoWall(t, 0.7));
+  // 아파트 UV 는 u = m/16, v = m/24 (한 장 = 16×24m) → 반복 1
+  const aptWalls = (facades?.apt ?? []).map((t) => {
     t.map.repeat.set(1, 1);
     t.emissive.repeat.set(1, 1);
+    prewarm(t.map);
+    prewarm(t.emissive);
     return withGrime(new THREE.MeshStandardMaterial({ map: t.map, emissive: 0xffffff, emissiveMap: t.emissive, emissiveIntensity: 0, roughness: 0.85, vertexColors: true }), wallGrime);
   });
-  const storeWalls = [1, 2, 3, 4].map((s) => {
-    const t = storefrontTextures(s);
-    return withGrime(new THREE.MeshStandardMaterial({ map: t.map, emissive: 0xffffff, emissiveMap: t.emissive, emissiveIntensity: 0, roughness: 0.38, metalness: 0.08, vertexColors: true }), { scale: 20, strength: 0.1, detail: 0, baseHeight: 1.2, baseStrength: 0.3 });
+  // 1층 상가 UV 는 u = m/12, v = 0..1 (한 장 = 12×3.6m) → 반복 1
+  const storeWalls = (facades?.store ?? []).map((t) => {
+    t.map.repeat.set(1, 1);
+    t.emissive.repeat.set(1, 1);
+    prewarm(t.map);
+    prewarm(t.emissive);
+    return withGrime(new THREE.MeshStandardMaterial({ map: t.map, emissive: 0xffffff, emissiveMap: t.emissive, emissiveIntensity: 0, roughness: 0.45, metalness: 0.05, vertexColors: true }), { scale: 20, strength: 0.1, detail: 0, baseHeight: 1.2, baseStrength: 0.25 });
   });
   const towerSet = [glass1, glass2, office, nightOffice];
-  const blockSet = [office, brick1, brick2, brick3];
-  const lowSet = [brick1, brick2, brick3, office];
-  const allWalls = [glass1, glass2, office, brick1, brick2, brick3, nightOffice, ...aptWalls, ...storeWalls];
+  const blockSet = [...blockPhoto, ...blockPhoto, office, brick1, nightOffice];
+  const lowSet = lowPhoto.length ? [...lowPhoto, ...lowPhoto, brick2, brick3] : [brick1, brick2, brick3, office];
+  const allWalls = [glass1, glass2, office, brick1, brick2, brick3, nightOffice, ...lowPhoto, ...blockPhoto, ...aptWalls, ...storeWalls];
+  // 돌출 간판 (세로 양면)
+  const VSIGN_VARIANTS = 10;
+  const vsignMats = Array.from({ length: VSIGN_VARIANTS }, (_, v) => new THREE.MeshBasicMaterial({ map: vSignTexture(v + 1), side: THREE.DoubleSide }));
   const roofMat = withGrime(new THREE.MeshStandardMaterial({ map: loadTex('Concrete034_Color.jpg', true, 3.3, 3.3), roughness: 0.95, color: 0x87898d, side: THREE.DoubleSide }), { scale: 18, strength: 0.4, detail: 4 });
   // 옥상 가장자리 파라펫(낮은 난간벽)과 상가 차양
   const parapetMat = withGrime(new THREE.MeshStandardMaterial({ map: loadTex('Concrete034_Color.jpg', true, 1, 1), roughness: 0.9, color: 0x9a9b9e, side: THREE.DoubleSide }), { scale: 12, strength: 0.35, detail: 2 });
@@ -843,7 +884,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
   const BILL_VARIANTS = 5;
   const billMats = Array.from({ length: BILL_VARIANTS }, (_, v) => new THREE.MeshBasicMaterial({ map: billboardTexture(v + 1), side: THREE.DoubleSide }));
   const dongMats = Array.from({ length: 12 }, (_, v) => new THREE.MeshBasicMaterial({ map: dongTexture(101 + v), transparent: true, side: THREE.DoubleSide }));
-  const allSignMats = [...signMats, ...billMats];
+  const allSignMats = [...signMats, ...billMats, ...vsignMats];
 
   const unitPlane = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
   const plane = new THREE.PlaneGeometry(1, 1);
@@ -1040,8 +1081,8 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
     };
 
     /** 간선을 8m 간격으로 촘촘히 잘라 노면 높이(지형·고가·지하)를 따라간다 */
-    const pathCache = new Map<number, { pts: number[]; ys: number[] }>();
-    const pathOf = (e: Edge): { pts: number[]; ys: number[] } => {
+    const pathCache = new Map<number, { pts: number[]; ys: number[]; lvs: number[] }>();
+    const pathOf = (e: Edge): { pts: number[]; ys: number[]; lvs: number[] } => {
       let p = pathCache.get(e.id);
       if (p) return p;
       const ss = new Set<number>(e.cum);
@@ -1049,12 +1090,14 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
       ss.add(e.len);
       const pts: number[] = [];
       const ys: number[] = [];
+      const lvs: number[] = [];
       for (const s of [...ss].sort((a, b) => a - b)) {
         const q = g.pointAt(e, 1, s);
         pts.push(q.x, q.z);
         ys.push(q.y);
+        lvs.push(g.levelAt(e, s));
       }
-      p = { pts, ys };
+      p = { pts, ys, lvs };
       pathCache.set(e.id, p);
       return p;
     };
@@ -1295,8 +1338,40 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
       const maskB = new GeoBuilder();
       const piers: Placement[] = [];
       const rails: Placement[] = [];
+      const tunnelLights: Placement[] = [];
+      const barrierB = new GeoBuilder();
+      const barrierPosts: Placement[] = [];
+      const guardBeams: Placement[] = [];
+      const guardPosts: Placement[] = [];
       for (const e of edges) {
         const path = pathOf(e);
+        // 고속화도로(motorway) 지상 구간: 양옆 방음벽. 간선(trunk) 지상 구간: 가드레일
+        if (isFlat(e) && !e.link && e.len >= 30 && e.rank <= 1) {
+          const off = e.half + (e.rank === 0 ? 1.0 : 0.6);
+          for (const side of [-1, 1]) {
+            const offPts = offsetPolyline(densify(slicePolyline(e.pts, 2, e.len - 2), 6), side * off).pts;
+            if (offPts.length < 4) continue;
+            // 건물·다른 길 위면 뺀다
+            const [cx, cz] = ptAt(offPts, cumOf(offPts), polylineLen(offPts) / 2);
+            const near = g.nearestEdge(cx, cz, 10);
+            if (inBuilding(cx, cz) || (near && near.e.id !== e.id && near.d < near.e.half + 0.5)) continue;
+            if (e.rank === 0) {
+              extrudeStrip(barrierB, offPts, 0.12, -0.3, 3.2, true, terrainAt);
+              for (let s = 0; s < polylineLen(offPts); s += 4) {
+                const [x, z] = ptAt(offPts, cumOf(offPts), s);
+                barrierPosts.push({ x, y: terrainAt(x, z) + 1.6, z, yaw: Math.atan2(p0(offPts, s).hx, p0(offPts, s).hz), w: 0.18, h: 3.4, d: 0.18 });
+              }
+            } else {
+              for (let s = 1.5; s < polylineLen(offPts); s += 3) {
+                const [x, z] = ptAt(offPts, cumOf(offPts), s);
+                const h = p0(offPts, s);
+                const yaw = Math.atan2(h.hx, h.hz);
+                guardBeams.push({ x, y: terrainAt(x, z) + 0.72, z, yaw, w: 0.08, h: 0.32, d: 3.05 });
+                guardPosts.push({ x, y: terrainAt(x, z) + 0.4, z, yaw, w: 0.1, h: 0.8, d: 0.1 });
+              }
+            }
+          }
+        }
         ribbon(rb, path.pts, e.half + (e.yt < 0 ? 0.7 : 0.3), 0.02, 8, path.ys, isFlat(e) ? terrainAt : undefined);
         if (isFlat(e)) {
           // 연석 없는 골목은 좁은 띠만 (연석 있는 길의 인도는 아래에서 체인 단위로)
@@ -1312,14 +1387,26 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
           // 교각: 22m 마다, 상판이 2.5m 이상 떠 있고 아래가 건물·일방통행 차로가 아닐 때
           for (let s = 11; s < e.len - 6; s += 22) {
             const p = g.pointAt(e, 1, s);
-            if (p.y < 2.5 || inBuilding(p.x, p.z)) continue;
+            const gy = terrainAt(p.x, p.z);
+            if (p.y - gy < 2.5 || inBuilding(p.x, p.z)) continue;
             const below = g.nearestEdge(p.x, p.z, 20);
             if (below && isFlat(below.e) && below.d < below.e.half && below.e.lb === 0) continue;
-            const h = p.y - 1.2;
-            piers.push({ x: p.x, y: h / 2, z: p.z, yaw: Math.atan2(p.hx, p.hz), w: e.half > 7 ? 2.4 : 1.6, h, d: 1.6 });
+            const h = p.y - 1.2 - gy;
+            piers.push({ x: p.x, y: gy + h / 2, z: p.z, yaw: Math.atan2(p.hx, p.hz), w: e.half > 7 ? 2.4 : 1.6, h, d: 1.6 });
             obstacles.push({ x: p.x, z: p.z, r: e.half > 7 ? 1.3 : 0.9 });
           }
-        } else trench(tunnelB, maskB, path.pts, path.ys, e.half);
+        } else {
+          trench(tunnelB, maskB, path.pts, path.ys, path.lvs, e.half);
+          // 덮인 구간 천장 조명: 8m 마다 양쪽
+          for (let s = 4; s < e.len; s += 8) {
+            const lv = g.levelAt(e, s);
+            if (lv > -4.5) continue;
+            const p = g.pointAt(e, 1, s);
+            const [rx, rz] = rightOf(p.hx, p.hz);
+            const cy = p.y - lv - 1.0 - 0.1;
+            for (const side of [-0.5, 0.5]) tunnelLights.push({ x: p.x + rx * e.half * side, y: cy, z: p.z + rz * e.half * side, yaw: Math.atan2(p.hx, p.hz), w: 0.3, h: 0.12, d: 1.4 });
+          }
+        }
       }
       // 인도: 체인마다 연석(0.12m) 위 보도블록, 교차로에서는 물러난다
       const medianB = new GeoBuilder();
@@ -1428,6 +1515,11 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
       const md = addInstanced(discGeo, maskMat, maskDiscs);
       if (md) md.renderOrder = -2;
       addInstanced(railGeo, bridgeRailMat, rails);
+      if (!barrierB.empty) addMesh(barrierB.build(), barrierMat, true);
+      addInstanced(unitBox, poleMat, barrierPosts, undefined, true);
+      addInstanced(unitBox, guardMat, guardBeams, undefined, true);
+      addInstanced(unitBox, poleMat, guardPosts);
+      addInstanced(unitBox, tunnelLightMat, tunnelLights);
     }
     yield 'roads';
 
@@ -1544,7 +1636,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
         if (twoWay) {
           for (let s = 3; s < e.len - 1; s += 6) {
             const p = g.pointAt(e, 1, s);
-            yellow.push({ x: p.x, y: p.y + 0.035, z: p.z, yaw: Math.atan2(p.hx, p.hz), w: 0.16, h: 1, d: Math.min(6, e.len - s + 2) });
+            yellow.push({ x: p.x, y: p.y + 0.035, z: p.z, yaw: Math.atan2(p.hx, p.hz), w: 0.2, h: 1, d: Math.min(6, e.len - s + 2) });
           }
         }
         const offs: number[] = [];
@@ -1556,7 +1648,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
           for (let s = 2; s < e.len - 2; s += 7) {
             const p = g.pointAt(e, 1, s);
             const [rx, rz] = rightOf(p.hx, p.hz);
-            for (const o of offs) white.push({ x: p.x + rx * o, y: roadY(e, p.y, p.x + rx * o, p.z + rz * o) + 0.035, z: p.z + rz * o, yaw: Math.atan2(p.hx, p.hz), w: 0.15, h: 1, d: 3 });
+            for (const o of offs) white.push({ x: p.x + rx * o, y: roadY(e, p.y, p.x + rx * o, p.z + rz * o) + 0.035, z: p.z + rz * o, yaw: Math.atan2(p.hx, p.hz), w: 0.2, h: 1, d: 3.2 });
           }
         }
       }
@@ -1574,7 +1666,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
           const center = e.lb === 0 ? 0 : laneSpan / 2;
           bars.push({ x: p.x + rx * center, y: roadY(e, p.y, p.x + rx * center, p.z + rz * center) + 0.036, z: p.z + rz * center, yaw, w: laneSpan - 0.5, h: 1, d: 0.4 });
           const q = g.pointAt(e, dir, Math.max(0, e.len - cut + 0.6));
-          for (let o = -e.half + 0.9; o < e.half - 0.3; o += 2.1) bars.push({ x: q.x + rx * o, y: roadY(e, q.y, q.x + rx * o, q.z + rz * o) + 0.036, z: q.z + rz * o, yaw, w: 1.2, h: 1, d: 2.4 });
+          for (let o = -e.half + 0.9; o < e.half - 0.3; o += 2.1) bars.push({ x: q.x + rx * o, y: roadY(e, q.y, q.x + rx * o, q.z + rz * o) + 0.036, z: q.z + rz * o, yaw, w: 1.3, h: 1, d: 3.0 });
           // 횡단보도 양끝 인도에 볼라드 두 개씩
           if (isFlat(e) && hasCurb(e.rank)) {
             for (const side of [-1, 1]) {
@@ -1694,6 +1786,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
     const spires: Placement[] = [];
     const beacons: Placement[] = [];
     const signLists: Placement[][] = Array.from({ length: SIGN_VARIANTS }, () => []);
+    const vsignLists: Placement[][] = Array.from({ length: VSIGN_VARIANTS }, () => []);
     const billLists: Placement[][] = Array.from({ length: BILL_VARIANTS }, () => []);
     const billFrames: Placement[] = [];
     const dongLists: Placement[][] = Array.from({ length: 12 }, () => []);
@@ -1887,13 +1980,25 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
           awnings.push({ x: mx + nx * 0.05 + rx * along, y: g0 + STORE_H - 0.55, z: mz + nz * 0.05 + rz * along, yaw: Math.atan2(nx, nz), w, h: 1, d: 1.1 + rand() * 0.5, c: AWNING_COLORS[Math.floor(rand() * AWNING_COLORS.length)] });
         }
         if (commercial && streetFace && len >= 3.5) {
-          const floors = Math.min(4, Math.floor((bd.h - 1) / STORE_H));
+          const floors = Math.min(5, Math.floor((bd.h - 1) / STORE_H));
+          const [rx, rz] = rightOf(nx, nz);
           for (let f = 1; f < floors; f++) {
-            if (rand() > 0.75) continue;
-            const w = Math.min(len - 0.8, 2.6 + rand() * 3.4);
-            const along = (rand() - 0.5) * (len - w - 0.4);
-            const [rx, rz] = rightOf(nx, nz);
-            signLists[Math.floor(rand() * SIGN_VARIANTS)].push({ x: mx + nx * 0.12 + rx * along, y: g0 + STORE_H * f + 1.9, z: mz + nz * 0.12 + rz * along, yaw: Math.atan2(nx, nz), w, h: w / 4 });
+            // 층마다 간판 1~2개 (서울 상가처럼 빽빽하게)
+            const count = rand() < 0.3 ? 0 : len > 9 && rand() < 0.5 ? 2 : 1;
+            for (let k = 0; k < count; k++) {
+              const w = Math.min(len / count - 0.8, 2.6 + rand() * 3.4);
+              const along = count === 2 ? (k - 0.5) * (len / 2) + (rand() - 0.5) * 0.6 : (rand() - 0.5) * (len - w - 0.4);
+              signLists[Math.floor(rand() * SIGN_VARIANTS)].push({ x: mx + nx * 0.12 + rx * along, y: g0 + STORE_H * f + 1.9, z: mz + nz * 0.12 + rz * along, yaw: Math.atan2(nx, nz), w, h: w / 4 });
+            }
+          }
+          // 돌출 간판: 벽에서 직각으로, 2~3층 높이. 긴 벽은 두 개
+          if (floors >= 2 && len >= 6) {
+            const n2 = len > 14 && rand() < 0.5 ? 2 : 1;
+            for (let k = 0; k < n2; k++) {
+              const along = n2 === 2 ? (k - 0.5) * len * 0.5 : (rand() - 0.5) * (len - 2);
+              const h = Math.min(2.6, STORE_H * (floors - 1) - 0.6);
+              vsignLists[Math.floor(rand() * VSIGN_VARIANTS)].push({ x: mx + nx * 0.5 + rx * along, y: g0 + STORE_H + 0.4 + h / 2, z: mz + nz * 0.5 + rz * along, yaw: Math.atan2(nx, nz) + Math.PI / 2, w: 0.65, h });
+            }
           }
         }
       }
@@ -1982,6 +2087,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
     addInstanced(coneGeo, spireMat, spires, undefined, true);
     addInstanced(beaconGeo, beaconMat, beacons);
     signLists.forEach((list, v) => addInstanced(plane, signMats[v], list));
+    vsignLists.forEach((list, v) => addInstanced(plane, vsignMats[v], list));
     billLists.forEach((list, v) => addInstanced(plane, billMats[v], list));
     addInstanced(unitBox, frameMat, billFrames);
     dongLists.forEach((list, v) => addInstanced(plane, dongMats[v], list));
@@ -2632,7 +2738,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
     mixHex(groundMat, 0x85878b, 0x2a2d36, k).multiplyScalar(wetK);
     mixHex(backdropMat, 0x66686c, 0x1e2028, k);
     groundMat.roughness = wet ? 0.35 : 0.95;
-    mixHex(roadMat, 0x8e9095, 0x2c2f38, k).multiplyScalar(wetK);
+    mixHex(roadMat, 0xb6b4ae, 0x3a3c44, k).multiplyScalar(wetK);
     roadMat.roughness = wet ? 0.35 : 1;
     mixHex(walkMat, 0x9f9e98, 0x3a3e48, k);
     walkMat.roughness = wet ? 0.5 : 1;
@@ -2668,7 +2774,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
       return [
         { mat: groundMat }, { mat: backdropMat }, { mat: waterMat }, { mat: parkMat }, { mat: railMat }, { mat: grassMat }, { mat: fieldMat }, { mat: standMat },
         ...both(roadMat), { mat: walkMat }, { mat: curbMat }, { mat: hedgeMat }, { mat: deckMat, inst: true }, { mat: deckMat }, { mat: tunnelMat }, { mat: bridgeRailMat, inst: true },
-        { mat: maskMat }, { mat: maskMat, inst: true }, { mat: yellowMat, inst: true }, { mat: whiteMat, inst: true }, { mat: barMat, inst: true },
+        { mat: maskMat }, { mat: maskMat, inst: true }, { mat: barrierMat }, { mat: guardMat, inst: true }, { mat: tunnelLightMat, inst: true }, { mat: yellowMat, inst: true }, { mat: whiteMat, inst: true }, { mat: barMat, inst: true },
         ...Object.values(arrowMats).map((m) => ({ mat: m, inst: true })), { mat: busLaneMat }, { mat: busTextMat, inst: true },
         { mat: grateMat, inst: true }, { mat: bollardMat, inst: true }, { mat: lensMat, inst: true }, { mat: poolMat, inst: true }, { mat: haloMat, points: true },
         { mat: poleMat, inst: true }, { mat: beaconMat, inst: true }, { mat: frameMat, inst: true }, { mat: hvacMat, inst: true }, { mat: tankMat, inst: true },
@@ -2676,7 +2782,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
         { mat: trashMat, inst: true }, { mat: utilityBoxMat, inst: true }, { mat: domeMat, inst: true }, { mat: spireMat, inst: true }, { mat: crownMat },
         { mat: roofMat }, { mat: parapetMat }, { mat: awningMat, inst: true, instColor: true },
         ...allWalls.map((m) => ({ mat: m })), ...signMats.map((m) => ({ mat: m, inst: true })), ...billMats.map((m) => ({ mat: m, inst: true })),
-        ...dongMats.map((m) => ({ mat: m, inst: true })), { mat: subwayMat('워밍업'), inst: true }, { mat: streetSignMat('워밍업'), inst: true },
+        ...dongMats.map((m) => ({ mat: m, inst: true })), ...vsignMats.map((m) => ({ mat: m, inst: true })), { mat: subwayMat('워밍업'), inst: true }, { mat: streetSignMat('워밍업'), inst: true },
         { mat: treeSet.barkMat, inst: true }, ...treeSet.leafMats.map((m) => ({ mat: m, inst: true })),
         ...(carModels ?? []).flatMap((c) => c.m.materials.map((m) => ({ mat: m, inst: true }))),
       ];

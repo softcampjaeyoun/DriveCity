@@ -30,6 +30,8 @@ export interface HudFrame {
   promptName: string | null;
   garageHint: boolean;
   drift: number | null;
+  /** 0..1 속도감 (속도선 세기) */
+  rush: number;
   carName: string;
   carLv: number;
   status: string;
@@ -50,6 +52,26 @@ export interface Hud {
   tick(dt: number): void;
   setBest(time: number): void;
 }
+
+/** 속도선: 화면 가장자리에서 중앙으로 모이는 방사선 (가속·부스트 때 진해진다) */
+function makeRush(): HTMLElement {
+  const el = document.createElement('div');
+  el.id = 'rush';
+  const lines: string[] = [];
+  for (let i = 0; i < 36; i++) {
+    const a = (i / 36) * Math.PI * 2 + (i % 2) * 0.05;
+    const r0 = 0.62 + (i % 3) * 0.07;
+    const x0 = 50 + Math.cos(a) * r0 * 70;
+    const y0 = 50 + Math.sin(a) * r0 * 70;
+    const x1 = 50 + Math.cos(a) * 1.2 * 70;
+    const y1 = 50 + Math.sin(a) * 1.2 * 70;
+    lines.push(`<line x1="${x0.toFixed(1)}" y1="${y0.toFixed(1)}" x2="${x1.toFixed(1)}" y2="${y1.toFixed(1)}" stroke-width="${(0.25 + (i % 4) * 0.12).toFixed(2)}" />`);
+  }
+  el.innerHTML = `<svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><g stroke="rgba(255,255,255,0.85)" stroke-linecap="round">${lines.join('')}</g></svg>`;
+  document.body.appendChild(el);
+  return el;
+}
+const rushEl = makeRush();
 
 export function createHud(): Hud {
   const el = {
@@ -102,6 +124,7 @@ export function createHud(): Hud {
 
   return {
     frame(f) {
+      rushEl.style.opacity = String(f.rush * 0.9);
       el.time.textContent = fmtTime(f.time);
       el.cp.textContent = `${f.cp} / ${CHECKPOINTS}`;
       el.credits.textContent = f.credits.toLocaleString('ko-KR');

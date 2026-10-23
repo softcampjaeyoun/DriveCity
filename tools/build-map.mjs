@@ -462,6 +462,8 @@ const parks = collectAreas(isPark, isPark);
 const rails = [];
 for (const w of ways.values()) {
   if (w.tags?.railway !== 'rail') continue;
+  // 지하 구간(터널·음수 레이어)은 지상에 그리지 않는다 — 지형 위로 올라와 도로를 덮는다
+  if (w.tags.tunnel === 'yes' || w.tags.tunnel === 'building_passage' || (w.tags.layer !== undefined && Number(w.tags.layer) < 0)) continue;
   const pts = w.nodes.map((id) => nodeXY.get(id)).filter((c) => c && inBox(c, 10)).flat();
   if (pts.length >= 4) rails.push(pts);
 }

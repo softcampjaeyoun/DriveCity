@@ -416,3 +416,7 @@ button:focus-visible { outline: 2px solid var(--neon); outline-offset: 3px; }
 @media (prefers-reduced-motion: reduce) {
   #drift, #toast, .gstat .bar i { transition: none; }
 }
+
+/* 속도선 (hud.ts makeRush) */
+#rush { position: fixed; inset: 0; z-index: 4; pointer-events: none; opacity: 0; transition: opacity 0.15s; mix-blend-mode: screen; }
+#rush svg { width: 100%; height: 100%; filter: blur(0.6px); }

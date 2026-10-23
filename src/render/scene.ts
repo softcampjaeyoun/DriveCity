@@ -6,6 +6,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { glowTexture } from './textures.ts';
 
 /**
  * 렌더 파이프라인: 장면 → GTAO(주변광 차폐, 반해상도) → 블룸 → 톤매핑·sRGB(OutputPass) → 컬러 그레이딩.
@@ -41,9 +42,9 @@ export interface Stage {
 const GradeShader = {
   uniforms: {
     tDiffuse: { value: null as THREE.Texture | null },
-    contrast: { value: 1.12 },
-    saturation: { value: 0.94 },
-    vignette: { value: 0.3 },
+    contrast: { value: 1.03 },
+    saturation: { value: 1.0 },
+    vignette: { value: 0.16 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -76,7 +77,7 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
   renderer.setPixelRatio(pixelRatio);
   // 필름 톤매핑은 OutputPass 에서 적용된다 (렌더타깃에 그릴 땐 재질 셰이더가 톤매핑을 하지 않는다)
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 0.76;
+  renderer.toneMappingExposure = 0.9;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
 
@@ -92,12 +93,15 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
   sky.renderOrder = -10;
   sky.frustumCulled = false;
   const su = sky.material.uniforms;
-  su.turbidity.value = 3;
-  su.rayleigh.value = 1.4;
+  // 하늘 밝기: 대기 산란 출력이 노출에 비해 너무 밝아 하얗게 날아가므로 셰이더 끝에서 skyGain 을 곱한다 (환경맵도 같은 재질이라 같이 줄어든다)
+  sky.material.uniforms.skyGain = { value: 0.12 };
+  sky.material.fragmentShader = sky.material.fragmentShader.replace('uniform float time;', 'uniform float time; uniform float skyGain;').replace('gl_FragColor = vec4( texColor, 1.0 );', 'gl_FragColor = vec4( texColor * skyGain, 1.0 );');
+  su.turbidity.value = 2.2;
+  su.rayleigh.value = 2.0;
   su.mieCoefficient.value = 0.004;
   su.mieDirectionalG.value = 0.86;
-  su.cloudCoverage.value = 0.42;
-  su.cloudDensity.value = 0.45;
+  su.cloudCoverage.value = 0.5;
+  su.cloudDensity.value = 0.6;
   su.cloudScale.value = 0.00025;
   su.cloudElevation.value = 0.45;
   scene.add(sky);
@@ -119,6 +123,14 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
   scene.add(nightSky);
 
   const camera = new THREE.PerspectiveCamera(62, 1, 0.1, 2600);
+
+  // 햇빛 글레어: 해 방향 멀리 두는 가산 스프라이트 (레이시티식 하이키 낮 느낌). 밤·비엔 사라진다
+  const glare = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture('rgba(255,244,220,1)', 256), color: 0xfff0d0, transparent: true, opacity: 0, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending, fog: false }));
+  glare.scale.set(900, 900, 1);
+  glare.renderOrder = -5;
+  glare.frustumCulled = false;
+  scene.add(glare);
+  const sunDir = new THREE.Vector3(0, 1, 0);
 
   const hemi = new THREE.HemisphereLight(0x5a6cc8, 0x1a1208, 0.75);
   scene.add(hemi);
@@ -190,6 +202,7 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
       time += dt;
       sky.position.copy(camera.position);
       nightSky.position.copy(camera.position);
+      glare.position.copy(camera.position).addScaledVector(sunDir, 1500);
       su.time.value = time;
       composer.render();
     },
@@ -207,6 +220,8 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
     },
     setSun(dir, raining) {
       su.sunPosition.value.copy(dir);
+      sunDir.copy(dir);
+      (glare.material as THREE.SpriteMaterial).opacity = raining ? 0 : Math.max(0, Math.min(1, (dir.y - 0.05) / 0.3)) * 0.55;
       if (raining !== envRain) {
         envRain = raining;
         su.turbidity.value = raining ? 14 : 3;
@@ -225,7 +240,8 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
     setNight(night) {
       nightMat.uniforms.opacity.value = Math.min(1, Math.max(0, (night - 0.15) / 0.7));
       nightSky.visible = night > 0.15;
-      scene.environmentIntensity = 0.36 - 0.32 * night;
+      // 하늘 게인(0.12)으로 줄어든 환경맵 밝기를 되돌린다
+      scene.environmentIntensity = 3.0 - 2.8 * night;
     },
     setExposure(v) {
       renderer.toneMappingExposure = v;
