@@ -8,10 +8,11 @@ import type { MapPoint } from './minimap.ts';
 export interface BigMap {
   readonly open: boolean;
   toggle(): void;
-  draw(t: number, S: PlayerState, npcs: Npc[], target: MapPoint | null, extra: MapPoint[]): void;
+  draw(t: number, S: PlayerState, npcs: Npc[], target: MapPoint | null, extra: MapPoint[], route?: number[]): void;
 }
 
-export function createBigMap(root: HTMLElement, g: RoadGraph, placeOf: (x: number, z: number) => string): BigMap {
+/** onDestination: 우클릭(드래그 아님)한 지점의 월드 좌표 */
+export function createBigMap(root: HTMLElement, g: RoadGraph, placeOf: (x: number, z: number) => string, onDestination?: (x: number, z: number) => void): BigMap {
   // 전체 지도는 빌드 때 만든 overview.png 를 배경으로 쓴다
   const overview = new Image();
   overview.src = `${MAP_BASE}${g.index.overview.file}`;
@@ -103,6 +104,11 @@ export function createBigMap(root: HTMLElement, g: RoadGraph, placeOf: (x: numbe
     if (!dragging) return;
     dragging = false;
     if (root.hasPointerCapture(e.pointerId)) root.releasePointerCapture(e.pointerId);
+    // 우클릭(움직이지 않음) = 목적지 설정
+    if (e.type === 'pointerup' && e.button === 2 && !dragMoved && onDestination) {
+      const { scale, ox, oz } = layout();
+      onDestination((e.clientX - ox) / scale + minX, (e.clientY - oz) / scale + minZ);
+    }
     // 우클릭 드래그는 click 이벤트가 안 오므로, 다음 틱에 플래그를 풀어 좌클릭 닫기가 막히지 않게
     setTimeout(() => (dragMoved = false), 0);
   };
@@ -168,7 +174,7 @@ export function createBigMap(root: HTMLElement, g: RoadGraph, placeOf: (x: numbe
       root.hidden = !open;
       if (open) centerOnPlayer(openZoom());
     },
-    draw(t, S, npcs, target, extra) {
+    draw(t, S, npcs, target, extra, route) {
       playerX = S.x;
       playerZ = S.z;
       if (!open) return;
@@ -186,6 +192,19 @@ export function createBigMap(root: HTMLElement, g: RoadGraph, placeOf: (x: numbe
         ctx.arc(px, pz, r, 0, Math.PI * 2);
         ctx.fill();
       };
+      if (route && route.length >= 4) {
+        ctx.strokeStyle = 'rgba(255,95,168,0.9)';
+        ctx.lineWidth = Math.max(3, Math.min(8, scale * 14));
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        for (let i = 0; i < route.length; i += 2) {
+          const [x, z] = toView(route[i], route[i + 1]);
+          if (i === 0) ctx.moveTo(x, z);
+          else ctx.lineTo(x, z);
+        }
+        ctx.stroke();
+      }
       for (const p of extra) dot(p.x, p.z, (p.r ?? 4) + 2, p.color);
       for (const n of npcs) {
         if (n.police?.chasing) dot(n.x, n.z, 5, Math.floor(t * 6) % 2 ? '#ff3a3a' : '#3a6bff');
@@ -232,7 +251,7 @@ export function createBigMap(root: HTMLElement, g: RoadGraph, placeOf: (x: numbe
           ctx.fillText(e.name, x, z - 4);
         }
       }
-      label.textContent = `${placeOf(S.x, S.z)} · ${zoom.toFixed(1)}배 · 우클릭 드래그 이동 · 휠 또는 + − 확대 · 좌클릭/Tab 닫기`;
+      label.textContent = `${placeOf(S.x, S.z)} · ${zoom.toFixed(1)}배 · 우클릭: 목적지 설정 · 우클릭 드래그 이동 · 휠 또는 + − 확대 · 좌클릭/Tab 닫기`;
     },
   };
   return api;

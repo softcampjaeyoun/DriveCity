@@ -6,6 +6,7 @@ import { createChaseCamera } from './camera.ts';
 import { coarse } from './config.ts';
 import { createBattle } from './game/battle.ts';
 import { createMissions, SPOTS } from './game/missions.ts';
+import { createNav, loadNav } from './game/nav.ts';
 import { createPedestrians } from './ai/pedestrians.ts';
 import { createRun } from './game/run.ts';
 import { addCredits, addXp, levelInfo, persist, save } from './game/save.ts';
@@ -38,7 +39,7 @@ import { createTileManager } from './world/tiles.ts';
 
 if (coarse) document.documentElement.classList.add('coarse');
 
-const COLOR = { run: 0x4fd1ff, battle: 0xffae4a, mission: 0x5ce09a };
+const COLOR = { run: 0x4fd1ff, battle: 0xffae4a, mission: 0x5ce09a, nav: 0xff5fa8 };
 const hex = (n: number) => `#${n.toString(16).padStart(6, '0')}`;
 const goBtn = document.getElementById('go') as HTMLButtonElement;
 goBtn.disabled = true;
@@ -97,7 +98,8 @@ goBtn.textContent = '주변 거리를 만드는 중…';
 await tiles.warmup(index.start.x, index.start.z);
 const player = createPlayer(scene, graph);
 const perf = createPerf(stage.renderer);
-const bigmap = createBigMap(document.getElementById('bigmap') as HTMLElement, graph, (x, z) => placeName(graph, graph.nearestNode(x, z)));
+const nav = createNav(await loadNav(), (b, s, secs) => hud.toast(b, s, secs));
+const bigmap = createBigMap(document.getElementById('bigmap') as HTMLElement, graph, (x, z) => placeName(graph, graph.nearestNode(x, z)), (x, z) => nav.setDestination(x, z));
 document.getElementById('mapwrap')!.addEventListener('click', () => bigmap.toggle());
 const chase = createChaseCamera(camera, (x, z, r, y) => world.push({ x, z, r, y }, false));
 const input = createInput();
@@ -250,7 +252,12 @@ input.on('fx', () => {
   stage.setBloom(save.settings.fx);
   toast(save.settings.fx ? '화면 효과 켬' : '화면 효과 끔', '블룸(빛 번짐)·주변광 차폐', 1.2);
 });
-input.on('cancel', () => missions.cancel());
+input.on('cancel', () => {
+  if (nav.active) {
+    nav.clear();
+    toast('길안내 취소', '', 1.2);
+  } else missions.cancel();
+});
 input.on('weather', () => weather.toggle());
 input.on('map', () => bigmap.toggle());
 input.on('perf', () => perf.toggle());
@@ -314,7 +321,7 @@ function checkRedLight(): void {
 // debugCam 을 채우면 추적 카메라 대신 그 위치에서 본다 (항공 샷)
 const dbg = { debugCam: null as null | { x: number; y: number; z: number; lx: number; ly?: number; lz: number } };
 if (import.meta.env.DEV) {
-  (window as unknown as { __dc: unknown }).__dc = { player, traffic, battle, run, garage, save, graph, signals, wanted, missions, weather, index, tiles, dbg, scene, world, camera, daylight, chase, city, tileScenes, pedestrians, stage, terrain };
+  (window as unknown as { __dc: unknown }).__dc = { player, traffic, battle, run, garage, save, graph, signals, wanted, missions, weather, index, tiles, dbg, scene, world, camera, daylight, chase, city, tileScenes, pedestrians, stage, terrain, nav, bigmap };
 }
 
 // ----- 루프 -----
@@ -351,11 +358,15 @@ function frame(now: number): void {
   daylight.follow(S.x, S.z);
   daylight.update(dt, weather.raining);
 
-  // 목표 지점: 미션 > 배틀 결승 > 타임어택 체크포인트
+  // 목표 지점: 내 목적지(길안내) > 미션 > 배틀 결승 > 타임어택 체크포인트
   const mt = missions.target;
-  const target = mt ? { ...mt, color: COLOR.mission, label: '미션 목표' }
+  const ns = nav.update(dt, S);
+  const target = ns ? { x: ns.dest.x, z: ns.dest.z, color: COLOR.nav, label: '목적지' }
+    : mt ? { ...mt, color: COLOR.mission, label: '미션 목표' }
     : battle.active ? { x: battle.tx, z: battle.tz, color: COLOR.battle, label: '결승 지점' }
       : { x: run.tx, z: run.tz, color: COLOR.run, label: '다음 지점' };
+  // 길안내 중엔 화살표가 경로 위 다음 지점을 가리키고 거리는 경로 길이
+  const aim = ns ? ns.next : target;
   marker.setPosition(target.x, target.z, graph.posY(graph.nearestNode(target.x, target.z)));
   marker.setColor(target.color);
   marker.update(t);
@@ -379,8 +390,8 @@ function frame(now: number): void {
     if (placeLabel === roadName) placeLabel = '';
   }
 
-  const dx = target.x - S.x;
-  const dz = target.z - S.z;
+  const dx = aim.x - S.x;
+  const dz = aim.z - S.z;
   const fx = Math.sin(S.h);
   const fz = Math.cos(S.h);
   const span = carStats.vmax / 5;
@@ -401,7 +412,7 @@ function frame(now: number): void {
     within,
     gear,
     nitro: S.nitro,
-    dist: Math.hypot(dx, dz),
+    dist: ns ? ns.remaining : Math.hypot(dx, dz),
     angle: Math.atan2(-(dx * Math.cos(S.h) - dz * Math.sin(S.h)), dx * fx + dz * fz),
     navLabel: target.label,
     navColor: hex(target.color),
@@ -422,8 +433,8 @@ function frame(now: number): void {
   hud.tick(dt);
   const extra: MapPoint[] = missions.spots.filter((sp) => sp.cool <= 0 && !missions.active).map((sp) => ({ x: sp.x, z: sp.z, color: hex(COLOR.mission), r: 3.5 }));
   const targetPoint = { x: target.x, z: target.z, color: hex(target.color) };
-  minimap.draw(t, S, traffic.npcs, targetPoint, extra);
-  bigmap.draw(t, S, traffic.npcs, targetPoint, extra);
+  minimap.draw(t, S, traffic.npcs, targetPoint, extra, ns?.route);
+  bigmap.draw(t, S, traffic.npcs, targetPoint, extra, ns?.route);
 
   audio?.update(dt, 48 + within * 85 + gear * 9 + (inp.up ? 8 : 0), inp.up, r.drifting, wanted.stars > 0 && nearestPolice < 140);
 

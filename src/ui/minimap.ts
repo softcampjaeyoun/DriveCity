@@ -11,7 +11,7 @@ export interface MapPoint {
 }
 
 export interface Minimap {
-  draw(t: number, S: PlayerState, npcs: Npc[], target: MapPoint | null, extra: MapPoint[]): void;
+  draw(t: number, S: PlayerState, npcs: Npc[], target: MapPoint | null, extra: MapPoint[], route?: number[]): void;
   addTile(key: string, tile: TileData): void;
   removeTile(key: string): void;
   /** px / m */
@@ -76,7 +76,7 @@ export function createMinimap(canvas: HTMLCanvasElement, g: RoadGraph): Minimap 
     removeTile(key) {
       tiles.delete(key);
     },
-    draw(t, S, npcs, target, extra) {
+    draw(t, S, npcs, target, extra, route) {
       ctx.fillStyle = '#0b0e16';
       ctx.fillRect(0, 0, MM, MM);
       const toView = (x: number, z: number): [number, number] => [(x - S.x) * SCALE + MM / 2, (z - S.z) * SCALE + MM / 2];
@@ -93,6 +93,19 @@ export function createMinimap(canvas: HTMLCanvasElement, g: RoadGraph): Minimap 
         ctx.arc(px, pz, r, 0, Math.PI * 2);
         ctx.fill();
       };
+      if (route && route.length >= 4) {
+        ctx.strokeStyle = 'rgba(255,95,168,0.9)';
+        ctx.lineWidth = 4;
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        for (let i = 0; i < route.length; i += 2) {
+          const [x, z] = toView(route[i], route[i + 1]);
+          if (i === 0) ctx.moveTo(x, z);
+          else ctx.lineTo(x, z);
+        }
+        ctx.stroke();
+      }
       for (const p of extra) dot(p.x, p.z, p.r ?? 4, p.color);
       for (const n of npcs) {
         const chasing = n.police?.chasing;
