@@ -89,6 +89,8 @@ export interface WarmMaterial {
 }
 
 const STORE_H = 3.6;
+/** 모임지붕 기와 색 (진회색 기와, 붉은 기와, 청기와, 회갈색) */
+const ROOF_TONES: Array<[number, number, number]> = [[0.36, 0.38, 0.42], [0.52, 0.33, 0.27], [0.34, 0.45, 0.38], [0.45, 0.42, 0.4]];
 const mixHex = (mat: { color: THREE.Color }, day: number, night: number, k: number) => mat.color.setHex(day).lerp(new THREE.Color(night), k);
 
 /** 삼각형을 모아 BufferGeometry 하나로 */
@@ -126,6 +128,68 @@ class GeoBuilder {
   get empty(): boolean {
     return this.idx.length === 0;
   }
+}
+
+/** 네 점 사각형(삼각형이면 p3 = p2)을 법선 n 쪽이 앞면이 되게 넣는다 */
+function quadToward(b: GeoBuilder, p: number[][], n: [number, number, number], uvs: number[][] = [[0, 0], [1, 0], [1, 1], [0, 1]]): void {
+  const [p0, p1, , p3] = p;
+  const ax = p1[0] - p0[0];
+  const ay = p1[1] - p0[1];
+  const az = p1[2] - p0[2];
+  const bx = p3[0] - p0[0];
+  const by = p3[1] - p0[1];
+  const bz = p3[2] - p0[2];
+  const flip = (ay * bz - az * by) * n[0] + (az * bx - ax * bz) * n[1] + (ax * by - ay * bx) * n[2] < 0;
+  const ids = p.map((q, i) => b.vertex(q[0], q[1], q[2], n[0], n[1], n[2], uvs[i][0], uvs[i][1]));
+  if (flip) b.quad(ids[1], ids[0], ids[3], ids[2]);
+  else b.quad(ids[0], ids[1], ids[2], ids[3]);
+}
+
+/**
+ * 벽선 (x0,z0)-(x1,z1) 에서 바깥(nx,nz)으로 out 만큼 튀어나온 가로 슬래브 (y0..y1). 앞·위·아래·양 끝 면.
+ * 볼록한 모서리에서 이웃 슬래브와 틈이 안 생기게 양 끝을 out 만큼 늘인다
+ */
+function slab(b: GeoBuilder, x0: number, z0: number, x1: number, z1: number, nx: number, nz: number, y0: number, y1: number, out: number): void {
+  const len = Math.hypot(x1 - x0, z1 - z0) || 1;
+  const tx = (x1 - x0) / len;
+  const tz = (z1 - z0) / len;
+  const ax = x0 - tx * out;
+  const az = z0 - tz * out;
+  const bx = x1 + tx * out;
+  const bz = z1 + tz * out;
+  const fax = ax + nx * out;
+  const faz = az + nz * out;
+  const fbx = bx + nx * out;
+  const fbz = bz + nz * out;
+  const u = (len + out * 2) / 4;
+  const h = (y1 - y0) / 4;
+  quadToward(b, [[fax, y0, faz], [fbx, y0, fbz], [fbx, y1, fbz], [fax, y1, faz]], [nx, 0, nz], [[0, 0], [u, 0], [u, h], [0, h]]);
+  quadToward(b, [[ax, y1, az], [bx, y1, bz], [fbx, y1, fbz], [fax, y1, faz]], [0, 1, 0]);
+  quadToward(b, [[ax, y0, az], [bx, y0, bz], [fbx, y0, fbz], [fax, y0, faz]], [0, -1, 0]);
+  quadToward(b, [[ax, y0, az], [fax, y0, faz], [fax, y1, faz], [ax, y1, az]], [-tx, 0, -tz]);
+  quadToward(b, [[bx, y0, bz], [fbx, y0, fbz], [fbx, y1, fbz], [bx, y1, bz]], [tx, 0, tz]);
+}
+
+/** 지붕 면 (사각형 또는 삼각형). 법선은 면에서 계산하고 위를 보는 쪽을 앞으로. 기와 줄은 (ux, uz) 방향(처마)과 나란하게, 2m 에 한 장 */
+function roofFace(b: GeoBuilder, p: number[][], ux: number, uz: number): void {
+  const [p0, p1, p2] = p;
+  const ax = p1[0] - p0[0];
+  const ay = p1[1] - p0[1];
+  const az = p1[2] - p0[2];
+  const bx = p2[0] - p0[0];
+  const by = p2[1] - p0[1];
+  const bz = p2[2] - p0[2];
+  let cx = ay * bz - az * by;
+  let cy = az * bx - ax * bz;
+  let cz = ax * by - ay * bx;
+  if (cy < 0) {
+    cx = -cx;
+    cy = -cy;
+    cz = -cz;
+  }
+  const l = Math.hypot(cx, cy, cz) || 1;
+  const q = p.length === 3 ? [p0, p1, p2, p2] : p;
+  quadToward(b, q, [cx / l, cy / l, cz / l], q.map((v) => [(v[0] * ux + v[2] * uz) / 2, (v[2] * ux - v[0] * uz) / 2 + v[1] / 2]));
 }
 
 /** 폴리라인 각 꼭짓점의 옆 방향(오른쪽) 벡터. 꺾이는 곳은 이음새가 벌어지지 않게 마이터로 늘인다. [nx, nz, ...] */
@@ -868,6 +932,8 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: { ini
   const vsignMats = Array.from({ length: VSIGN_VARIANTS }, (_, v) => new THREE.MeshBasicMaterial({ map: vSignTexture(v + 1), side: THREE.DoubleSide }));
   const roofMat = withGrime(new THREE.MeshStandardMaterial({ map: loadTex('Concrete034_Color.jpg', true, 3.3, 3.3), roughness: 0.95, color: 0x87898d, side: THREE.DoubleSide }), { scale: 18, strength: 0.4, detail: 4 });
   // 옥상 가장자리 파라펫(낮은 난간벽)과 상가 차양
+  // 모임지붕 기와: 색은 꼭짓점 색(집마다), 얼룩으로 단조로움을 깬다
+  const tileRoofMat = withGrime(new THREE.MeshStandardMaterial({ map: loadTex('RoofingTiles006_Gray.jpg', true, 1, 1), normalMap: loadTex('RoofingTiles006_NormalGL.jpg', false, 1, 1), roughness: 0.75, vertexColors: true, side: THREE.DoubleSide }), { scale: 9, strength: 0.35, detail: 2.5 });
   const parapetMat = withGrime(new THREE.MeshStandardMaterial({ map: loadTex('Concrete034_Color.jpg', true, 1, 1), roughness: 0.9, color: 0x9a9b9e, side: THREE.DoubleSide }), { scale: 12, strength: 0.35, detail: 2 });
   const awningMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, side: THREE.DoubleSide });
   const AWNING_COLORS = [0x8c1d1d, 0x1f3a6b, 0x2f5a3a, 0xb8872c, 0x3a3a3a, 0x9b2d4a, 0xe8e2d4, 0x1d4e8c];
@@ -1802,6 +1868,8 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: { ini
       return [t[0] * k, t[1] * k, t[2] * k];
     };
     const parapetB = new GeoBuilder();
+    // 모임지붕(기와): 집마다 색이 달라 꼭짓점 색을 쓴다
+    const tileRoofB = new GeoBuilder(true);
     const awnings: Array<Placement & { c: number }> = [];
     const roofB = new GeoBuilder();
     const fieldB = new GeoBuilder();
@@ -1828,6 +1896,92 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: { ini
       const e = b.vertex(x0, y1, z0, nx, 0, nz, ua, v1);
       if (cross > 0) b.quad(a, c, d, e);
       else b.quad(c, a, e, d);
+    }
+
+    /** 사각형 고리 위 모임지붕: 긴 변 방향 용마루, 처마 0.5m. 기와색은 집마다 */
+    function hipRoof(ring: number[], y: number): void {
+      const [cx, cz] = ringCentroid(ring);
+      // 처마: 꼭짓점을 중심에서 바깥으로 0.5m
+      const eave = [0, 1, 2, 3].map((i) => {
+        const x = ring[i * 2];
+        const z = ring[i * 2 + 1];
+        const l = Math.hypot(x - cx, z - cz) || 1;
+        return [x + ((x - cx) / l) * 0.5, z + ((z - cz) / l) * 0.5];
+      });
+      const e01 = Math.hypot(eave[1][0] - eave[0][0], eave[1][1] - eave[0][1]);
+      const e12 = Math.hypot(eave[2][0] - eave[1][0], eave[2][1] - eave[1][1]);
+      // 긴 변이 0-1, 2-3 이 되게 돌린다
+      const q = e01 >= e12 ? eave : [eave[1], eave[2], eave[3], eave[0]];
+      const L = Math.max(e01, e12);
+      const W = Math.min(e01, e12);
+      const rise = W * (0.3 + rand() * 0.12);
+      // 용마루 양끝: 짧은 변 가운데에서 안쪽으로 W/2
+      const m30 = [(q[3][0] + q[0][0]) / 2, (q[3][1] + q[0][1]) / 2];
+      const m12 = [(q[1][0] + q[2][0]) / 2, (q[1][1] + q[2][1]) / 2];
+      const ax = (m12[0] - m30[0]) / (L || 1);
+      const az = (m12[1] - m30[1]) / (L || 1);
+      const k = Math.max(0, Math.min(W / 2, L / 2 - 0.3));
+      const r0 = [m30[0] + ax * k, y + rise, m30[1] + az * k];
+      const r1 = [m12[0] - ax * k, y + rise, m12[1] - az * k];
+      const v = (i: number) => [q[i][0], y, q[i][1]];
+      const t = ROOF_TONES[Math.floor(rand() * ROOF_TONES.length)];
+      const kk = 0.85 + rand() * 0.25;
+      tileRoofB.tint = [t[0] * kk, t[1] * kk, t[2] * kk];
+      roofFace(tileRoofB, [v(0), v(1), r1, r0], ax, az);
+      roofFace(tileRoofB, [v(2), v(3), r0, r1], ax, az);
+      roofFace(tileRoofB, [v(1), v(2), r1], -az, ax);
+      roofFace(tileRoofB, [v(3), v(0), r0], -az, ax);
+      // 처마 밑(지붕 아래 천장)
+      flatPolygon(roofB, ring, y - 0.02, 6);
+    }
+
+    /** 아파트 옥상 승강기 기계실 두 동 (가장 긴 변 축의 20%·80% 지점) */
+    function aptRooftop(ring: number[], y: number, edge: number): void {
+      const n = ring.length / 2;
+      const j = (edge + 1) % n;
+      const len = Math.hypot(ring[j * 2] - ring[edge * 2], ring[j * 2 + 1] - ring[edge * 2 + 1]) || 1;
+      const ux = (ring[j * 2] - ring[edge * 2]) / len;
+      const uz = (ring[j * 2 + 1] - ring[edge * 2 + 1]) / len;
+      const vx = -uz;
+      const vz = ux;
+      const [cx, cz] = ringCentroid(ring);
+      let umin = Infinity;
+      let umax = -Infinity;
+      let vmin = Infinity;
+      let vmax = -Infinity;
+      for (let i = 0; i < n; i++) {
+        const dx = ring[i * 2] - cx;
+        const dz = ring[i * 2 + 1] - cz;
+        const u = dx * ux + dz * uz;
+        const w = dx * vx + dz * vz;
+        umin = Math.min(umin, u);
+        umax = Math.max(umax, u);
+        vmin = Math.min(vmin, w);
+        vmax = Math.max(vmax, w);
+      }
+      const depth = Math.min(6, (vmax - vmin) * 0.55);
+      if (depth < 3) return;
+      const vc = (vmin + vmax) / 2;
+      for (const t of [0.2, 0.8]) {
+        const uc = umin + (umax - umin) * t;
+        const bx = cx + ux * uc + vx * vc;
+        const bz = cz + uz * uc + vz * vc;
+        if (!pointInRing(ring, bx, bz)) continue;
+        const hw = 2.6;
+        const hd = depth / 2;
+        const corner = (su: number, sv: number) => [bx + ux * hw * su + vx * hd * sv, bz + uz * hw * su + vz * hd * sv];
+        const box = [corner(-1, -1), corner(1, -1), corner(1, 1), corner(-1, 1)];
+        const h = 3.4;
+        for (let i = 0; i < 4; i++) {
+          const a = box[i];
+          const c = box[(i + 1) % 4];
+          const mx = (a[0] + c[0]) / 2 - bx;
+          const mz = (a[1] + c[1]) / 2 - bz;
+          const ml = Math.hypot(mx, mz) || 1;
+          quadToward(parapetB, [[a[0], y, a[1]], [c[0], y, c[1]], [c[0], y + h, c[1]], [a[0], y + h, a[1]]], [mx / ml, 0, mz / ml], [[0, 0], [1.3, 0], [1.3, 0.85], [0, 0.85]]);
+        }
+        quadToward(parapetB, box.map(([x, z]) => [x, y + h, z]), [0, 1, 0]);
+      }
     }
 
     function buildBuilding(bd: BuildingData): void {
@@ -1990,6 +2144,8 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: { ini
         const u1 = (cum + len) / uScale + ou;
         const hasStore = commercial && streetFace && bd.h > STORE_H + 1.5;
         if (hasStore) {
+          // 1층과 2층 사이 간판 띠(캐노피 슬래브): 1층 상가 위 그늘과 층 구분을 만든다
+          if (len >= 2.5) slab(parapetB, x0, z0, x1, z1, nx, nz, g0 + STORE_H - 0.2, g0 + STORE_H + 0.3, 0.55);
           wallQuad(sb, x0, z0, x1, z1, g0, g0 + STORE_H, nx, nz, cum / 12, (cum + len) / 12, 0, 1);
           wallQuad(wb, x0, z0, x1, z1, g0 + STORE_H, g0 + bd.h, nx, nz, u0, u1, STORE_H / vScale + ov, bd.h / vScale + ov);
         } else wallQuad(wb, x0, z0, x1, z1, g0, g0 + bd.h, nx, nz, u0, u1, ov, bd.h / vScale + ov);
@@ -2027,7 +2183,34 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: { ini
           }
         }
       }
+      const area = ringAreaAbs(ring);
+      // 작은 저층 단독주택(사각형, 큰길에서 떨어진 곳): 기와 모임지붕
+      if (bd.kind === 'low' && !nearBig && bd.h <= 9 && n === 4 && area > 40 && area < 220 && rand() < 0.6) {
+        hipRoof(ring, g0 + bd.h);
+        return;
+      }
       flatPolygon(roofB, ring, g0 + bd.h, 6);
+      // 코니스: 상가·업무 건물 지붕선에 바깥으로 튀어나온 띠 (상자 실루엣을 깬다)
+      if (commercial && bd.h > 6 && n <= 24) {
+        for (let i = 0; i < n; i++) {
+          const j = (i + 1) % n;
+          const ex0 = ring[i * 2];
+          const ez0 = ring[i * 2 + 1];
+          const ex1 = ring[j * 2];
+          const ez1 = ring[j * 2 + 1];
+          const el = Math.hypot(ex1 - ex0, ez1 - ez0);
+          if (el < 1.5) continue;
+          let enx = (ez1 - ez0) / el;
+          let enz = -(ex1 - ex0) / el;
+          if (enx * ((ex0 + ex1) / 2 - ccx) + enz * ((ez0 + ez1) / 2 - ccz) < 0) {
+            enx = -enx;
+            enz = -enz;
+          }
+          slab(parapetB, ex0, ez0, ex1, ez1, enx, enz, g0 + bd.h - 0.5, g0 + bd.h, 0.3);
+        }
+      }
+      // 아파트 옥탑: 긴 축 양끝에 승강기 기계실
+      if (isApt && bd.h > 20 && longest >= 0 && longestLen > 18) aptRooftop(ring, g0 + bd.h, longest);
       // 옥상 파라펫: 바깥 면 0.7m + 윗면 띠 0.35m. 실루엣이 상자처럼 밋밋하지 않게
       if (bd.h > 5 && n <= 40) {
         wallBetween(parapetB, ring, g0 + bd.h, ring, g0 + bd.h + 0.7, 8, 8);
@@ -2036,7 +2219,6 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: { ini
       }
       if (bd.h > 55) beacons.push({ x: ccx, y: g0 + bd.h + 0.6, z: ccz, yaw: 0, w: 1, h: 1 });
       // 옥상 설비: 실외기·물탱크 (평평한 지붕 위, 테두리 안쪽)
-      const area = ringAreaAbs(ring);
       if (bd.h > 7 && area > 60 && n <= 12) {
         const [bx0, bx1, bz0, bz1] = ringBounds(ring);
         const count = Math.min(5, Math.floor(area / 120));
@@ -2097,6 +2279,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: { ini
     }
     if (!roofB.empty) addMesh(roofB.build(), roofMat);
     if (!parapetB.empty) addMesh(parapetB.build(), parapetMat, true);
+    if (!tileRoofB.empty) addMesh(tileRoofB.build(), tileRoofMat, true);
     {
       const am = addInstanced(awningGeo, awningMat, awnings, undefined, true);
       counts.awning = awnings.length;
@@ -2814,7 +2997,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: { ini
         { mat: poleMat, inst: true }, { mat: beaconMat, inst: true }, { mat: frameMat, inst: true }, { mat: hvacMat, inst: true }, { mat: tankMat, inst: true },
         { mat: shelterMat, inst: true }, { mat: shelterGlassMat, inst: true }, { mat: shelterSignMat, inst: true }, { mat: manholeMat, inst: true },
         { mat: trashMat, inst: true }, { mat: utilityBoxMat, inst: true }, { mat: domeMat, inst: true }, { mat: spireMat, inst: true }, { mat: crownMat },
-        { mat: roofMat }, { mat: parapetMat }, { mat: awningMat, inst: true, instColor: true },
+        { mat: roofMat }, { mat: parapetMat }, { mat: tileRoofMat }, { mat: awningMat, inst: true, instColor: true },
         ...allWalls.map((m) => ({ mat: m })), ...signMats.map((m) => ({ mat: m, inst: true })), ...billMats.map((m) => ({ mat: m, inst: true })),
         ...dongMats.map((m) => ({ mat: m, inst: true })), ...vsignMats.map((m) => ({ mat: m, inst: true })), { mat: subwayMat('워밍업'), inst: true }, { mat: streetSignMat('워밍업'), inst: true },
         { mat: treeSet.barkMat, inst: true }, ...treeSet.leafMats.map((m) => ({ mat: m, inst: true })),

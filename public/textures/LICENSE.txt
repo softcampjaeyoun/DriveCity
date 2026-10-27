@@ -2,3 +2,4 @@ Textures in this folder are from ambientCG (https://ambientcg.com), licensed CC0
 Facade001, Facade005, Facade006, Facade013, Facade017, Facade018A, Facade019A, Facade020A (Color / NormalGL / Emission),
 Asphalt033 (Color / NormalGL / Roughness), PavingStones136 (Color / NormalGL / Roughness / AmbientOcclusion), PavingStones151 (Color / NormalGL),
 Concrete034 (Color / NormalGL), Grass004 (Color / NormalGL / Roughness), Bark012 (Color / NormalGL). All 1K JPG.
+RoofingTiles006 (Color → grayscale 512px as RoofingTiles006_Gray, NormalGL 512px).
