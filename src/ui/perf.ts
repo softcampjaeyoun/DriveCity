@@ -1,4 +1,4 @@
-import type * as THREE from 'three';
+import type { AnyRenderer } from '../render/scene.ts';
 
 /**
  * 성능 진단 오버레이 (P 키). 멈칫거림의 원인을 찾으려고 긴 프레임마다 "그때 무엇이 돌았는지"를 적어 둔다:
@@ -27,7 +27,13 @@ export interface Perf {
 
 const HITCH_MS = 70;
 
-export function createPerf(renderer: THREE.WebGLRenderer): Perf {
+export function createPerf(renderer: AnyRenderer): Perf {
+  // WebGL·WebGPU 렌더러의 info 모양이 조금 달라 필요한 것만 느슨하게 읽는다 (WebGPU 엔 프로그램 목록이 없다)
+  const ri = renderer.info as unknown as {
+    programs?: unknown[];
+    render: { calls?: number; drawCalls?: number; triangles: number };
+    memory: { geometries: number; textures: number };
+  };
   const el = document.createElement('pre');
   el.id = 'perf';
   el.style.cssText = 'position:fixed;left:8px;top:8px;z-index:50;margin:0;padding:8px 10px;font:11px/1.45 ui-monospace,Consolas,monospace;color:#dfe6f0;background:rgba(8,10,16,.72);border:1px solid rgba(255,255,255,.12);border-radius:6px;white-space:pre;pointer-events:none;max-width:70vw;display:none';
@@ -58,7 +64,7 @@ export function createPerf(renderer: THREE.WebGLRenderer): Perf {
       const ms = dt * 1000;
       times.push(ms);
       if (times.length > 120) times.shift();
-      const programs = renderer.info.programs?.length ?? 0;
+      const programs = ri.programs?.length ?? 0;
       const newPrograms = programs - lastPrograms;
       lastPrograms = programs;
       // 이번 프레임에 돌았던 타일 단계 (profile 은 2ms 넘는 것만 쌓인다)
@@ -87,10 +93,10 @@ export function createPerf(renderer: THREE.WebGLRenderer): Perf {
       const avg = times.reduce((a, b) => a + b, 0) / times.length;
       const sorted = [...times].sort((a, b) => a - b);
       const p95 = sorted[Math.floor(sorted.length * 0.95)] ?? 0;
-      const r = renderer.info.render;
+      const r = ri.render;
       el.textContent = [
         `프레임 ${fmt(ms)}ms  평균 ${fmt(avg)}  p95 ${fmt(p95)}  최악(5s) ${fmt(worst)}   fps ${(1000 / avg).toFixed(0)}`,
-        `그리기 호출 ${r.calls}  삼각형 ${(r.triangles / 1000).toFixed(0)}k  프로그램 ${programs}  지오메트리 ${renderer.info.memory.geometries}  텍스처 ${renderer.info.memory.textures}`,
+        `그리기 호출 ${r.calls ?? r.drawCalls}  삼각형 ${(r.triangles / 1000).toFixed(0)}k  프로그램 ${ri.programs ? programs : '-'}  지오메트리 ${ri.memory.geometries}  텍스처 ${ri.memory.textures}`,
         `JS ${fmt(info.jsMs)}ms (프레임의 ${Math.round((100 * info.jsMs) / Math.max(1, ms))}% — 낮으면 GPU 병목)  품질 ${info.quality}`,
         `타일 ${info.tilesLoaded} (상세 ${info.detailed}, 받는 중 ${info.tilesLoading}, 만드는 중 ${info.building ?? '-'})  NPC ${info.npcs}  보행자 ${info.peds}  힙 ${mem()}`,
         '',

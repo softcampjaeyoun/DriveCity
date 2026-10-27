@@ -12,6 +12,8 @@ export interface Settings {
   fx: boolean;
   /** 'auto' 면 프레임 시간을 보고 자동으로 낮춘다 */
   quality?: 'auto' | 'high' | 'medium' | 'low';
+  /** 렌더러. 'auto' 는 지금 WebGL (scene.ts AUTO_BACKEND). 바꾸면 새로고침해야 적용 */
+  renderer?: 'auto' | 'webgl' | 'webgpu';
   /** 0 = 끔, 1.. = 방송국 */
   radio: number;
 }

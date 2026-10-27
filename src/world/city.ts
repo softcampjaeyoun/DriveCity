@@ -3,7 +3,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { mulberry32 } from '../util/math.ts';
 import { arrowTexture, billboardTexture, busLaneTexture, dongTexture, facadeSet, loadMerged, loadTex, shopNameAtlas, signTexture, streetSignTexture, subwaySignTexture, SUB_KO, wallRepeat, type ArrowKind, type MergedModel } from '../render/assets.ts';
 import { vSignTexture, type FacadeLib } from '../render/facades.ts';
-import { withGrime, withParkMask } from '../render/materials.ts';
+import { makePoints, withGrime, withParkMask } from '../render/materials.ts';
 import { buildTreeSet, hedgeTexture } from '../render/trees.ts';
 import { glowTexture, windowTexture } from '../render/textures.ts';
 import { isFlat, type Edge, type Node, type RoadGraph } from './graph.ts';
@@ -692,7 +692,7 @@ function placeInstances(mesh: THREE.InstancedMesh, list: Placement[], dummy: THR
   dummy.scale.set(1, 1, 1);
 }
 
-export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE.WebGLRenderer, terrain?: Terrain, facades?: FacadeLib): City {
+export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: { initTexture(texture: THREE.Texture): void }, terrain?: Terrain, facades?: FacadeLib): City {
   /** 지형 높이 (한강 수면 0). 지형이 없으면 0 */
   const terrainAt = (x: number, z: number): number => (terrain ? terrain.at(x, z) : 0);
   const dummy = new THREE.Object3D();
@@ -2534,7 +2534,7 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
         lamps.forEach((l, i) => haloPos.set([l.x + l.dx * 2.5, l.y + 7.9, l.z + l.dz * 2.5], i * 3));
         const haloGeo = new THREE.BufferGeometry();
         haloGeo.setAttribute('position', new THREE.BufferAttribute(haloPos, 3));
-        group.add(new THREE.Points(haloGeo, haloMat));
+        group.add(makePoints(haloGeo, haloMat));
         disposables.push(haloGeo);
       }
     }

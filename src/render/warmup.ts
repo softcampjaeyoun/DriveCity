@@ -51,7 +51,9 @@ export async function warmShaders(stage: Stage, mats: WarmMaterial[], models: TH
   // 카메라 바로 앞 깊은 땅속에 두고 한 번 그린다 (플레이어·도시와 겹치지 않게)
   group.position.set(camera.position.x, camera.position.y - 400, camera.position.z);
   scene.add(group);
-  const before = renderer.info.programs?.length ?? 0;
+  // WebGPU 렌더러의 info 엔 프로그램 목록이 없다 (0 으로 센다)
+  const programs = () => (renderer.info as { programs?: unknown[] }).programs?.length ?? 0;
+  const before = programs();
   try {
     await renderer.compileAsync(group, camera, scene);
     const saveX = camera.position.x;
@@ -70,7 +72,7 @@ export async function warmShaders(stage: Stage, mats: WarmMaterial[], models: TH
     colored.dispose();
     pts.dispose();
   }
-  const n = (renderer.info.programs?.length ?? 0) - before;
+  const n = programs() - before;
   console.info(`[warmup] 셰이더 프로그램 ${n}개 미리 컴파일`);
   return n;
 }

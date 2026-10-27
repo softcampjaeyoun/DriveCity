@@ -32,6 +32,8 @@ export function createDaylight(stage: Stage, onNight: (night: number) => void, s
   stage.onShadowSize = (size) => {
     if (sun.shadow.mapSize.x === size) return;
     sun.shadow.mapSize.set(size, size);
+    // WebGPU 는 그림자 맵 크기를 매 프레임 mapSize 에 맞춘다. 맵을 버리면 안 된다
+    if (stage.backend === 'webgpu') return;
     sun.shadow.map?.dispose();
     sun.shadow.map = null;
   };

@@ -73,6 +73,26 @@ export function grimeTexture(): THREE.CanvasTexture {
   return grimeTex;
 }
 
+/**
+ * WebGPU 렌더러는 onBeforeCompile(GLSL 주입)을 쓰지 않는다. WebGPU 를 쓸 때 scene-gpu 가 TSL 노드 버전을 꽂아 두면
+ * withGrime·withParkMask 가 GLSL 대신 그걸로 같은 효과를 낸다
+ */
+export interface NodeMaterialHooks {
+  grime(mat: THREE.Material, opt: Required<GrimeOptions>): void;
+  park(mat: THREE.Material, grass: THREE.Texture, repeat: number, tint: THREE.Color): void;
+  /** 크기 있는 점: WebGPU 는 Points 를 1픽셀로만 그려 인스턴스 스프라이트로 바꾼다 */
+  points(geo: THREE.BufferGeometry, mat: THREE.PointsMaterial): THREE.Object3D;
+}
+let nodeHooks: NodeMaterialHooks | null = null;
+export function useNodeMaterials(h: NodeMaterialHooks): void {
+  nodeHooks = h;
+}
+
+/** 점 구름(가로등 빛 번짐 등). WebGL 은 Points 그대로, WebGPU 는 인스턴스 스프라이트 */
+export function makePoints(geo: THREE.BufferGeometry, mat: THREE.PointsMaterial): THREE.Object3D {
+  return nodeHooks ? nodeHooks.points(geo, mat) : new THREE.Points(geo, mat);
+}
+
 /** 재질에 월드 좌표 얼룩(과 밑동 때)을 끼워 넣는다. 같은 재질 객체를 돌려준다 */
 export function withGrime<T extends THREE.Material>(mat: T, opt: GrimeOptions = {}): T {
   const scale = opt.scale ?? 40;
@@ -80,6 +100,10 @@ export function withGrime<T extends THREE.Material>(mat: T, opt: GrimeOptions = 
   const detail = opt.detail ?? 7;
   const baseHeight = opt.baseHeight ?? 0;
   const baseStrength = opt.baseStrength ?? 0;
+  if (nodeHooks) {
+    nodeHooks.grime(mat, { scale, strength, detail, baseHeight, baseStrength });
+    return mat;
+  }
   const prev = mat.onBeforeCompile;
   const prevKey = mat.customProgramCacheKey;
   mat.onBeforeCompile = (shader, renderer) => {
@@ -125,6 +149,10 @@ export function withGrime<T extends THREE.Material>(mat: T, opt: GrimeOptions = 
  * withGrime 과 함께 쓸 수 있다 (onBeforeCompile 이 이어진다)
  */
 export function withParkMask<T extends THREE.Material>(mat: T, grass: THREE.Texture, grassRepeat = 4, grassTint = new THREE.Color(0x9aa684)): T {
+  if (nodeHooks) {
+    nodeHooks.park(mat, grass, grassRepeat, grassTint);
+    return mat;
+  }
   const prev = mat.onBeforeCompile;
   const prevKey = mat.customProgramCacheKey;
   mat.onBeforeCompile = (shader, renderer) => {

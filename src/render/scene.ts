@@ -6,7 +6,17 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import type { WebGPURenderer } from 'three/webgpu';
 import { glowTexture } from './textures.ts';
+
+export type Backend = 'webgl' | 'webgpu';
+/**
+ * 설정이 'auto' 일 때 쓸 렌더러. three r0.186 WebGPU 경로는 실측(인텔 내장 GPU)에서 WebGL 보다 수십 배 느리고
+ * (그림자 재질을 매 프레임 다시 빌드, 재질마다 노드 빌드) 타일이 들어올 때 몇 초씩 멈춰 아직은 WebGL 이 기본. ?renderer=webgpu 로 시험
+ */
+export const AUTO_BACKEND: Backend = 'webgl';
+/** 두 렌더러 다. 공통으로 쓰는 건 setPixelRatio·initTexture·compileAsync·info 정도라 쓰는 쪽에서 좁혀 쓴다 */
+export type AnyRenderer = THREE.WebGLRenderer | WebGPURenderer;
 
 /**
  * 렌더 파이프라인: 장면 → GTAO(주변광 차폐, 반해상도) → 블룸 → 톤매핑·sRGB(OutputPass) → 컬러 그레이딩.
@@ -14,7 +24,9 @@ import { glowTexture } from './textures.ts';
  * 밤에는 도시 불빛이 번진 그라데이션 구를 하늘 위에 덮는다
  */
 export interface Stage {
-  renderer: THREE.WebGLRenderer;
+  /** 실제로 쓰는 렌더러 (WebGPU 를 원해도 안 되면 webgl) */
+  readonly backend: Backend;
+  renderer: AnyRenderer;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   hemi: THREE.HemisphereLight;
@@ -35,7 +47,7 @@ export interface Stage {
   /** 디버그: AO 패스 출력 모드 ('off' 가 정상 합성) */
   setAoDebug(mode: 'off' | 'ao' | 'denoise' | 'normal' | 'depth'): void;
   /** 디버그: 패스 켜고 끄기 */
-  passes: { gtao: GTAOPass; bloom: UnrealBloomPass; grade: ShaderPass };
+  passes: { gtao: { enabled: boolean }; bloom: { enabled: boolean } };
   /** 품질 단계: 픽셀 비율·AO·블룸·그림자 해상도 */
   setQuality(q: Quality): void;
   readonly quality: Quality;
@@ -83,7 +95,27 @@ export const QUALITY: Record<Quality, { pixelRatio: number; shadow: number; gtao
   low: { pixelRatio: 1, shadow: 1024, gtao: false, gtaoSamples: 8, bloom: false, label: '낮음' },
 };
 
-export function createStage(canvas: HTMLCanvasElement): Stage {
+/**
+ * 렌더러를 골라 무대를 만든다. want 가 webgpu 여도 브라우저가 WebGPU 어댑터를 못 주면 WebGL 로 간다.
+ * WebGPU 코드(three/webgpu)는 이때만 불러온다
+ */
+export async function createStage(canvas: HTMLCanvasElement, want: Backend): Promise<Stage> {
+  if (want === 'webgpu') {
+    try {
+      const gpu = (navigator as Navigator & { gpu?: { requestAdapter(): Promise<unknown> } }).gpu;
+      if (!gpu || !(await gpu.requestAdapter())) throw new Error('WebGPU 어댑터 없음');
+      const { createStageGPU } = await import('./scene-gpu.ts');
+      const stage = await createStageGPU(canvas);
+      console.info('[gpu] WebGPU 렌더러');
+      return stage;
+    } catch (e) {
+      console.warn('[gpu] WebGPU 를 못 써서 WebGL 로 그려요:', e);
+    }
+  }
+  return createStageGL(canvas);
+}
+
+function createStageGL(canvas: HTMLCanvasElement): Stage {
   // stencil: 지하차도 트인 구간이 바닥 평면에 구멍을 내는 데 쓴다 (city.ts 의 maskMat/groundMat)
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, stencil: true });
   let quality: Quality = 'high';
@@ -215,6 +247,7 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
 
   let time = 0;
   return {
+    backend: 'webgl',
     renderer,
     scene,
     camera,
@@ -275,7 +308,7 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
     setAoDebug(mode) {
       gtao.output = { off: GTAOPass.OUTPUT.Default, ao: GTAOPass.OUTPUT.AO, denoise: GTAOPass.OUTPUT.Denoise, normal: GTAOPass.OUTPUT.Normal, depth: GTAOPass.OUTPUT.Depth }[mode];
     },
-    passes: { gtao, bloom: bloomPass, grade },
+    passes: { gtao, bloom: bloomPass },
     get quality() {
       return quality;
     },

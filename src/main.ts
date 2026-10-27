@@ -14,7 +14,7 @@ import { CHASE_PACE, createWanted } from './game/wanted.ts';
 import { IDLE, createInput } from './input.ts';
 import { createRadio, type Radio } from './radio.ts';
 import { createDaylight } from './render/daylight.ts';
-import { createStage, QUALITY, type Quality } from './render/scene.ts';
+import { AUTO_BACKEND, createStage, QUALITY, type Quality } from './render/scene.ts';
 import { createWeather } from './render/weather.ts';
 import { createBigMap } from './ui/bigmap.ts';
 import { createGarage } from './ui/garage.ts';
@@ -46,7 +46,10 @@ goBtn.disabled = true;
 goBtn.textContent = '서울 지도를 불러오는 중…';
 
 const canvas = document.getElementById('view') as HTMLCanvasElement;
-const stage = createStage(canvas);
+// 렌더러: 주소의 ?renderer=webgl|webgpu 가 설정보다 먼저
+const rendererParam = new URLSearchParams(location.search).get('renderer');
+const rendererPref = rendererParam === 'webgl' || rendererParam === 'webgpu' ? rendererParam : (save.settings.renderer ?? 'auto');
+const stage = await createStage(canvas, rendererPref === 'auto' ? AUTO_BACKEND : rendererPref);
 const { scene, camera } = stage;
 const hud = createHud();
 // 간판·광고판 글씨를 캔버스에 그리니 한글 웹폰트를 먼저 기다린다
@@ -479,7 +482,7 @@ function frame(now: number): void {
       slowTime = 0;
     }
   }
-  perf.frame(now, rawDt, { tilesLoaded: tiles.loaded.size, tilesLoading: tiles.loading, building: tiles.building, detailed: tiles.detailed.size, profile: tiles.profile, npcs: traffic.npcs.length, peds: pedestrians.stats().total, jsMs, quality: `${save.settings.quality ?? 'auto'}/${stage.quality}` });
+  perf.frame(now, rawDt, { tilesLoaded: tiles.loaded.size, tilesLoading: tiles.loading, building: tiles.building, detailed: tiles.detailed.size, profile: tiles.profile, npcs: traffic.npcs.length, peds: pedestrians.stats().total, jsMs, quality: `${save.settings.quality ?? 'auto'}/${stage.quality} · ${stage.backend}` });
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
