@@ -68,8 +68,8 @@ export interface City {
   /** 플레이어 가까운 타일에만 더하는 상세(길가 주차 차량, 상호 간판). 충돌체 목록을 돌려준다. 이미 있으면 null */
   buildExtras(key: string): Generator<string, Obstacle[] | null>;
   removeExtras(key: string): void;
-  /** 매 프레임 호출. 고층 빌딩 경고등 깜빡임, 물결 */
-  update(t: number): void;
+  /** 매 프레임 호출. 고층 빌딩 경고등 깜빡임, 물결, 플레이어(x, z) 가까운 주차 차량만 그리기 */
+  update(t: number, x: number, z: number): void;
   /** 비가 올 때 노면을 젖은 느낌으로 */
   setWet(wet: boolean): void;
   /** 0 낮 .. 1 밤. 재질 색과 창문·가로등·네온 밝기를 바꾼다 */
@@ -943,6 +943,31 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
   })();
 
   const tiles = new Map<string, TileScene>();
+  // 주차 차량: 골목 타일마다 수백 대라 다 그리면 삼각형이 200만 개에 이른다. 플레이어 NEAR_PARKED 안 차만 인스턴스 앞칸에 모은다
+  const NEAR_PARKED = 180;
+  const nearSets = new Set<{ mesh: THREE.InstancedMesh; all: Float32Array; xz: Float32Array }>();
+  const cullAt = { x: NaN, z: NaN };
+  const cullNear = (x: number, z: number) => {
+    if (Math.abs(x - cullAt.x) < 10 && Math.abs(z - cullAt.z) < 10) return;
+    cullAt.x = x;
+    cullAt.z = z;
+    const r2 = NEAR_PARKED * NEAR_PARKED;
+    for (const { mesh, all, xz } of nearSets) {
+      const dst = mesh.instanceMatrix.array as Float32Array;
+      let k = 0;
+      for (let i = 0; i < xz.length / 2; i++) {
+        const dx = xz[i * 2] - x;
+        const dz = xz[i * 2 + 1] - z;
+        if (dx * dx + dz * dz > r2) continue;
+        dst.set(all.subarray(i * 16, i * 16 + 16), k * 16);
+        k++;
+      }
+      mesh.count = k;
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.visible = k > 0;
+      if (k > 0) mesh.computeBoundingSphere();
+    }
+  };
   /** 타일마다 나중에 더 넣은 메시의 정리 목록 (미뤄 둔 교차로 모서리) */
   const tileDisposables = new Map<string, Array<{ dispose(): void }>>();
   /** 이웃 타일이 아직 없어 미뤄 둔 교차로 모서리 노드들 */
@@ -2711,17 +2736,26 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
         const list = buckets[k];
         if (!list.length) return;
         const mesh = new THREE.InstancedMesh(cm.m.geometry, cm.m.materials, list.length);
+        const all = new Float32Array(list.length * 16);
+        const xz = new Float32Array(list.length * 2);
         list.forEach((c, i) => {
           dummy.position.set(c.x, c.y + cm.yOff, c.z);
           dummy.rotation.set(0, c.yaw, 0);
           dummy.scale.setScalar(cm.scale);
           dummy.updateMatrix();
           mesh.setMatrixAt(i, dummy.matrix);
+          dummy.matrix.toArray(all, i * 16);
+          xz[i * 2] = c.x;
+          xz[i * 2 + 1] = c.z;
         });
         dummy.rotation.set(0, 0, 0);
         dummy.scale.set(1, 1, 1);
         mesh.castShadow = true;
         group.add(mesh);
+        const set = { mesh, all, xz };
+        nearSets.add(set);
+        cullAt.x = NaN;
+        disposables.push({ dispose: () => nearSets.delete(set) });
       });
     };
     if (carModels) placeCars();
@@ -2804,7 +2838,8 @@ export function createCity(scene: THREE.Scene, index: MapIndex, renderer?: THREE
       t.extras.dispose();
       t.extras = null;
     },
-    update(t) {
+    update(t, x, z) {
+      cullNear(x, z);
       beaconMat.color.setHex(Math.sin(t * 3) > 0 ? 0xff3040 : 0x330408);
       ripple.offset.set(t * 0.012, t * 0.008);
     },

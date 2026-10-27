@@ -50,6 +50,9 @@ interface Walker {
   bag: boolean;
   /** 승하차 연출: 길 끝에 닿으면 사라진다 */
   transit?: boolean;
+  /** 마지막으로 놓인 자리 (그릴지 거리 판정) */
+  px?: number;
+  pz?: number;
 }
 interface Link {
   path: number;
@@ -68,7 +71,10 @@ interface TilePeds {
 type Part = 'head' | 'hair' | 'torso' | 'armL' | 'armR' | 'legL' | 'legR' | 'bag';
 const PARTS: Part[] = ['head', 'hair', 'torso', 'armL', 'armR', 'legL', 'legR', 'bag'];
 /** 이보다 먼 보행자는 움직이지 않는다 (매 프레임 행렬 수천 개를 올리지 않게) */
-const ACTIVE_DIST = 320;
+const ACTIVE_DIST = 200;
+/** 이 거리 안 보행자만 그린다 (멀면 몇 픽셀이라 안 보이는데 수천 명이면 삼각형이 200만 개) */
+const DRAW_DIST = 160;
+const DRAW_CAP = 1200;
 
 const SKIN = [0xf1c9a5, 0xe8b894, 0xd9a07a, 0xf5d6b8];
 const HAIR = [0x1a1512, 0x2b1d14, 0x4a3524, 0x6b4a2e, 0x8a8a8a, 0xd8d0c4];
@@ -118,6 +124,18 @@ export function createPedestrians(scene: THREE.Scene, sig: WalkSignals, density 
   const hidden = new THREE.Matrix4().makeScale(0, 0, 0);
   let nightK = 0;
   const TRANSIT_CAP = 48;
+  // 실제로 그리는 공용 인스턴스 (부위마다 하나)
+  const draw = {} as Record<Part, THREE.InstancedMesh>;
+  for (const p of PARTS) {
+    const m = new THREE.InstancedMesh(geo[p], mat, DRAW_CAP);
+    m.castShadow = true;
+    m.frustumCulled = false;
+    m.count = 0;
+    m.setColorAt(0, col.setHex(0xffffff));
+    m.name = 'peds';
+    draw[p] = m;
+    scene.add(m);
+  }
   const transitRand = mulberry32(4242);
 
   /** 승하차 연출용 묶음 (자리 48개, 빈 자리를 돌려 쓴다) */
@@ -127,11 +145,9 @@ export function createPedestrians(scene: THREE.Scene, sig: WalkSignals, density 
     const parts = {} as Record<Part, THREE.InstancedMesh>;
     for (const p of PARTS) {
       const m = new THREE.InstancedMesh(geo[p], mat, TRANSIT_CAP);
-      m.castShadow = true;
-      m.frustumCulled = false;
       for (let i = 0; i < TRANSIT_CAP; i++) m.setMatrixAt(i, hidden);
+      m.setColorAt(0, col.setHex(0xffffff));
       parts[p] = m;
-      scene.add(m);
     }
     t = { parts, walkers: new Array<Walker | null>(TRANSIT_CAP).fill(null), walks: [], adj: new Map(), fresh: false };
     tiles.set('__transit', t);
@@ -235,10 +251,7 @@ export function createPedestrians(scene: THREE.Scene, sig: WalkSignals, density 
       const parts = {} as Record<Part, THREE.InstancedMesh>;
       for (const p of PARTS) {
         const m = new THREE.InstancedMesh(geo[p], mat, walkers.length);
-        m.castShadow = true;
-        m.frustumCulled = false;
         parts[p] = m;
-        scene.add(m);
       }
       walkers.forEach((w, i) => paint(parts, i, w, rand));
       tiles.set(key, { parts, walkers, walks: ts.walks, adj: buildAdj(ts.walks), fresh: true });
@@ -267,15 +280,11 @@ export function createPedestrians(scene: THREE.Scene, sig: WalkSignals, density 
       const t = tiles.get(key);
       if (!t) return;
       tiles.delete(key);
-      for (const p of PARTS) {
-        scene.remove(t.parts[p]);
-        t.parts[p].dispose();
-      }
+      for (const p of PARTS) t.parts[p].dispose();
     },
     update(dt, S) {
       const now = performance.now() * 0.001;
       for (const t of tiles.values()) {
-        let dirty = false;
         t.walkers.forEach((w, i) => {
           if (!w) return;
           let P = t.walks[w.path];
@@ -283,7 +292,6 @@ export function createPedestrians(scene: THREE.Scene, sig: WalkSignals, density 
           const here = sampleAt(P, w.s);
           const d = Math.hypot(here.x - S.x, here.z - S.z);
           if (!t.fresh && d > ACTIVE_DIST) return;
-          dirty = true;
           // 횡단보도 앞: 보행 신호가 파란불이 아니면 연석에서 기다린다
           const step = w.speed * dt;
           w.standing = false;
@@ -301,7 +309,6 @@ export function createPedestrians(scene: THREE.Scene, sig: WalkSignals, density 
                 // 승하차 연출 끝: 자리를 비우고 숨긴다
                 t.walkers[i] = null;
                 for (const p of PARTS) t.parts[p].setMatrixAt(i, hidden);
-                dirty = true;
                 return;
               }
               hop(w, t, (Math.sin(w.phase * 7.3 + now) + 1) * 0.5);
@@ -315,6 +322,8 @@ export function createPedestrians(scene: THREE.Scene, sig: WalkSignals, density 
           const px = q.x + q.nx * w.dodge;
           const pz = q.z + q.nz * w.dodge;
           const yaw = Math.atan2(q.hx * w.dir, q.hz * w.dir);
+          w.px = px;
+          w.pz = pz;
           // 걷기: 다리·팔 스윙, 몸 살짝 상하. 서 있으면 멈춘다
           const sw = w.standing ? 0 : Math.sin(w.phase + now * (4.2 + w.speed * 2));
           const s = w.height / 1.7;
@@ -344,7 +353,31 @@ export function createPedestrians(scene: THREE.Scene, sig: WalkSignals, density 
           place('bag', 0, shoulderY - 0.05, -0.17 * s, 0, w.bag ? s : 0.0001, w.bag ? s : 0.0001, w.bag ? s : 0.0001);
         });
         t.fresh = false;
-        if (dirty) for (const p of PARTS) t.parts[p].instanceMatrix.needsUpdate = true;
+      }
+      // 가까운 보행자만 공용 인스턴스 앞칸에 모아 그린다 (타일별 인스턴스는 행렬·색 보관용)
+      let k = 0;
+      const r2 = DRAW_DIST * DRAW_DIST;
+      for (const t of tiles.values()) {
+        for (let i = 0; i < t.walkers.length && k < DRAW_CAP; i++) {
+          const w = t.walkers[i];
+          if (!w || w.px === undefined || w.pz === undefined) continue;
+          const dx = w.px - S.x;
+          const dz = w.pz - S.z;
+          if (dx * dx + dz * dz > r2) continue;
+          for (const p of PARTS) {
+            const src = t.parts[p];
+            const dst = draw[p];
+            (dst.instanceMatrix.array as Float32Array).set((src.instanceMatrix.array as Float32Array).subarray(i * 16, i * 16 + 16), k * 16);
+            if (src.instanceColor && dst.instanceColor) (dst.instanceColor.array as Float32Array).set((src.instanceColor.array as Float32Array).subarray(i * 3, i * 3 + 3), k * 3);
+          }
+          k++;
+        }
+      }
+      for (const p of PARTS) {
+        const dst = draw[p];
+        dst.count = k;
+        dst.instanceMatrix.needsUpdate = true;
+        if (dst.instanceColor) dst.instanceColor.needsUpdate = true;
       }
     },
     setNight(night) {

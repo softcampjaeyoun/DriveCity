@@ -174,10 +174,19 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
   let envRain = false;
 
   // ----- 후처리 -----
-  const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: THREE.HalfFloatType, stencilBuffer: true }));
+  // 장면 깊이(+스텐실)를 텍스처로 받아 AO 가 법선을 깊이에서 복원하게 한다.
+  // 넘기지 않으면 GTAOPass 가 법선을 얻으려고 장면 전체를 한 번 더 그린다 (그리기 호출·삼각형이 두 배)
+  const sceneDepth = new THREE.DepthTexture(innerWidth, innerHeight, THREE.UnsignedInt248Type);
+  sceneDepth.format = THREE.DepthStencilFormat;
+  const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: THREE.HalfFloatType, stencilBuffer: true, depthTexture: sceneDepth }));
+  // 핑퐁 버퍼 둘이 같은 깊이를 쓰게 해, 어느 쪽에 장면을 그렸든 AO 가 같은 텍스처를 읽는다
+  composer.renderTarget2.depthTexture?.dispose();
+  composer.renderTarget2.depthTexture = sceneDepth;
   composer.addPass(new RenderPass(scene, camera));
   // 주변광 차폐: 건물 밑동·연석·차 밑에 접촉 그림자. 반해상도로 돌려 비용을 줄인다
   const gtao = new GTAOPass(scene, camera, Math.floor((innerWidth * pixelRatio) / 2), Math.floor((innerHeight * pixelRatio) / 2));
+  // 생성자에 depthTexture 를 넘기면 r0.186 GTAOPass 가 만들기 전의 normalRenderTarget 을 읽어 죽는다. 만든 뒤에 바꿔 끼운다
+  gtao.setGBuffer(sceneDepth);
   gtao.output = GTAOPass.OUTPUT.Default;
   gtao.blendIntensity = 0.9;
   gtao.updateGtaoMaterial({ radius: 2.5, distanceExponent: 1.0, thickness: 4.0, scale: 2.0, samples: 16, distanceFallOff: 0, screenSpaceRadius: false });

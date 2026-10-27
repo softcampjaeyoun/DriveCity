@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { reduceMotion } from '../config.ts';
 import { glowTexture, nameTag } from '../render/textures.ts';
 import { clamp, rint } from '../util/math.ts';
@@ -34,6 +35,10 @@ export interface PoliceState {
 
 export interface Npc {
   mesh: THREE.Group;
+  /** 차체 색 (먼 거리 LOD 상자 색) */
+  hex: number;
+  /** 바닥 번짐 메시 (매 프레임 이름으로 찾지 않게 들고 있는다) */
+  glow: { head: THREE.Mesh; tail: THREE.Mesh; police: THREE.Mesh | null };
   kind: VehicleKind;
   /** 충돌 원 중심 오프셋 (앞 +) */
   probes: number[];
@@ -113,12 +118,13 @@ export interface Traffic {
 const LANE_RATE = 2.2;
 
 export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals, ev: TrafficEvents): Traffic {
-  function buildMesh(kind: VehicleKind, hex: number, rival: RivalSpec | null, index: number): { mesh: THREE.Group; police: PoliceState | null } {
+  function buildMesh(kind: VehicleKind, hex: number, rival: RivalSpec | null, index: number): { mesh: THREE.Group; police: PoliceState | null; glow: Npc['glow'] } {
     const mesh = new THREE.Group();
     const visual = rival ? buildSedan(hex, kind.length, kind.width) : buildForKind(kind, hex);
     visual.name = 'fallback';
     mesh.add(visual);
     let police: PoliceState | null = null;
+    let policeGlow: THREE.Mesh | null = null;
     if (rival) {
       const ug = new THREE.Mesh(
         new THREE.PlaneGeometry(3.4, 6).rotateX(-Math.PI / 2),
@@ -141,6 +147,7 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
       glow.position.set(0, 0.06, 0);
       glow.name = 'policeGlow';
       mesh.add(bar, red, blue, glow);
+      policeGlow = glow;
       red.visible = blue.visible = false;
       police = { chasing: false, lights: [red, blue], routeTimer: 0, blink: 0 };
     }
@@ -155,7 +162,7 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
     const pool = kind.models;
     swapModel(mesh, visual, rival ? rival.model : pool?.length ? pool[index % pool.length] : undefined, kind.tintModel ? hex : undefined);
     scene.add(mesh);
-    return { mesh, police };
+    return { mesh, police, glow: { head, tail, police: policeGlow } };
   }
   const headGlowGeo = new THREE.PlaneGeometry(3.2, 8).rotateX(-Math.PI / 2);
   const tailGlowGeo = new THREE.PlaneGeometry(2.4, 2.4).rotateX(-Math.PI / 2);
@@ -164,6 +171,54 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
   const policeGlowGeo = new THREE.PlaneGeometry(14, 14).rotateX(-Math.PI / 2);
   const tailTex = glowTexture('rgba(255,80,80,0.6)');
   let nightK = 1;
+
+  // ----- 먼 차 LOD -----
+  // 반경 400m 안 차가 수백 대라 모델(재질 5~6개)로 다 그리면 그리기 호출이 2천 번을 넘는다.
+  // LOD_NEAR 밖 차는 모델을 숨기고, 차 모양 상자 하나를 인스턴스로 몰아 그린다 (몇 대든 호출 1번)
+  const LOD_NEAR = 150;
+  /** 바닥 번짐(전조등·후미등)은 이 거리 안에서만 */
+  const GLOW_NEAR = 110;
+  const FAR_CAP = 768;
+  const farGeo = mergeGeometries([
+    new THREE.BoxGeometry(1, 0.52, 1).translate(0, 0.36, 0),
+    new THREE.BoxGeometry(0.84, 0.4, 0.52).translate(0, 0.82, -0.06),
+  ]);
+  const farCars = new THREE.InstancedMesh(farGeo, new THREE.MeshStandardMaterial({ roughness: 0.4, metalness: 0.25 }), FAR_CAP);
+  farCars.name = 'farCars';
+  farCars.frustumCulled = false;
+  farCars.count = 0;
+  farCars.setColorAt(0, new THREE.Color());
+  scene.add(farCars);
+  const lodDummy = new THREE.Object3D();
+  const lodColor = new THREE.Color();
+  function updateLod(S: PlayerState): void {
+    let k = 0;
+    const night = nightK > 0.02;
+    for (const n of npcs) {
+      const dx = n.x - S.x;
+      const dz = n.z - S.z;
+      const d2 = dx * dx + dz * dz;
+      const near = d2 < LOD_NEAR * LOD_NEAR || !!n.rival || !!n.police?.chasing;
+      n.mesh.visible = near;
+      if (near) {
+        const glowOk = d2 < GLOW_NEAR * GLOW_NEAR;
+        n.glow.head.visible = night && glowOk;
+        n.glow.tail.visible = glowOk && (n.glow.tail.material as THREE.MeshBasicMaterial).opacity > 0.01;
+        continue;
+      }
+      if (k >= FAR_CAP) continue;
+      lodDummy.position.set(n.x, n.y, n.z);
+      lodDummy.rotation.set(n.mesh.rotation.x, n.h, 0);
+      lodDummy.scale.set(n.kind.width, n.kind.length > 8 ? 2.6 : 1.4, n.kind.length);
+      lodDummy.updateMatrix();
+      farCars.setMatrixAt(k, lodDummy.matrix);
+      farCars.setColorAt(k, lodColor.setHex(n.hex));
+      k++;
+    }
+    farCars.count = k;
+    farCars.instanceMatrix.needsUpdate = true;
+    if (farCars.instanceColor) farCars.instanceColor.needsUpdate = true;
+  }
 
   const npcs: Npc[] = [];
   const police: Npc[] = [];
@@ -269,6 +324,8 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
     const built = buildMesh(kind, hex, rival, index);
     const n: Npc = {
       mesh: built.mesh,
+      hex,
+      glow: built.glow,
       kind,
       probes: probesFor(kind.length),
       radius: kind.width / 2 + 0.15,
@@ -692,8 +749,7 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
         const heavy = n.kind.length > 8 ? 0.6 : 1;
         const braking = want < n.speed - 0.5;
         n.speed += (want - n.speed) * Math.min(1, dt * (want < n.speed ? (panic ? 8 : 3) : 1.2) * heavy);
-        const tail = n.mesh.getObjectByName('tailGlow') as THREE.Mesh | undefined;
-        if (tail) (tail.material as THREE.MeshBasicMaterial).opacity = braking ? 0.35 + 0.5 * nightK : 0.4 * nightK;
+        (n.glow.tail.material as THREE.MeshBasicMaterial).opacity = braking ? 0.35 + 0.5 * nightK : 0.4 * nightK;
         n.s += n.speed * dt;
         let guard = 0;
         while (guard++ < 4) {
@@ -719,13 +775,13 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
 
         if (n.police) {
           const p = n.police;
-          const glow = n.mesh.getObjectByName('policeGlow') as THREE.Mesh | undefined;
-          const glowMat = glow?.material as THREE.MeshBasicMaterial | undefined;
+          const glowMat = n.glow.police?.material as THREE.MeshBasicMaterial | undefined;
           if (p.chasing) {
             p.blink += dt * 8;
             const phase = Math.floor(p.blink) % 2 === 0;
             p.lights[0].visible = phase;
             p.lights[1].visible = !phase;
+            if (n.glow.police) n.glow.police.visible = true;
             if (glowMat) {
               glowMat.opacity = 0.55 + 0.35 * nightK;
               glowMat.color.setHex(phase ? 0xff3a3a : 0x3a6bff);
@@ -733,9 +789,11 @@ export function createTraffic(scene: THREE.Scene, g: RoadGraph, signals: Signals
           } else {
             p.lights[0].visible = p.lights[1].visible = false;
             if (glowMat) glowMat.opacity = 0;
+            if (n.glow.police) n.glow.police.visible = false;
           }
         }
       }
+      updateLod(S);
     },
 
     collidePlayer(S) {

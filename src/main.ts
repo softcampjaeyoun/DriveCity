@@ -394,7 +394,7 @@ function frame(now: number): void {
     m.setVisible(!!sp && !missions.active && sp.cool <= 0);
     m.update(t);
   });
-  city.update(t);
+  city.update(t, player.S.x, player.S.z);
   player.setFlash(flash);
   flash = Math.max(0, flash - dt * 3);
 
